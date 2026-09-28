@@ -1,0 +1,371 @@
+<!doctype html>
+<html lang="zh-Hant-TW" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI 對練教練</title>
+<script>try { const t = localStorage.getItem('aicoach.theme'); if (t) document.documentElement.dataset.theme = t; } catch (e) { /* 無法讀取就用預設深色 */ }</script>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%23000'/%3E%3Cpath d='M9 21c0-3.9 3.1-7 7-7s7 3.1 7 7' stroke='%23fff' stroke-width='2.4' fill='none' stroke-linecap='round'/%3E%3Ccircle cx='16' cy='10' r='3' fill='%23fff'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+TC:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="app" id="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <span class="logo" aria-hidden="true"><svg viewBox="0 0 32 32"><path d="M9 21c0-3.9 3.1-7 7-7s7 3.1 7 7" stroke="currentColor" stroke-width="2.6" fill="none" stroke-linecap="round"/><circle cx="16" cy="10" r="3" fill="currentColor"/></svg></span>
+      <span>對練教練</span>
+    </div>
+    <button class="sb-item" id="btnNew" type="button"><span data-icon="edit"></span>新對練</button>
+    <nav class="sb-nav">
+      <button class="sb-item nav-item active" data-nav="home" type="button"><span data-icon="grid"></span>對練情境</button>
+      <button class="sb-item nav-item" data-nav="history" type="button"><span data-icon="history"></span>練習紀錄<span class="nav-count" id="historyCount"></span></button>
+      <button class="sb-item nav-item" data-nav="scenarios" type="button"><span data-icon="list"></span>情境設定</button>
+      <button class="sb-item nav-item" data-nav="rep" type="button"><span data-icon="user"></span>我的背景</button>
+      <button class="sb-item nav-item" data-nav="voices" type="button"><span data-icon="volume"></span>聲音設定</button>
+    </nav>
+    <div class="sb-section">最近練習</div>
+    <div class="sb-recent" id="recentList"></div>
+    <div class="sb-foot">
+      <div class="provider" id="provider" title="AI 大腦">
+        <span class="dot"></span>
+        <select id="providerSelect" aria-label="切換 AI 大腦"></select>
+      </div>
+      <div class="provider-msg" id="providerMsg">連線中…</div>
+      <div class="sb-row">
+        <button class="icon-btn" id="btnTheme" type="button" title="切換深色／淺色"><span data-icon="moon"></span></button>
+        <span class="sb-note">示範版本 · 內容待主管與法遵確認</span>
+      </div>
+    </div>
+  </aside>
+
+  <main class="main">
+    <!-- 首頁 -->
+    <section id="view-home" class="view active">
+      <div class="home">
+        <h1 class="home-title">今天想跟哪位客戶練習？</h1>
+        <p class="home-sub">AI 會扮演客戶跟你講電話，結束後逐句給你評分和建議說法。</p>
+        <div class="scn-grid" id="scenarioGrid"></div>
+        <p class="env-hint" id="envHint"></p>
+      </div>
+    </section>
+
+    <!-- 練習紀錄 -->
+    <section id="view-history" class="view">
+      <div class="page">
+        <div class="page-head">
+          <h1>練習紀錄</h1>
+          <button class="pill ghost" id="btnClearHistory" type="button"><span data-icon="trash"></span>清除</button>
+        </div>
+        <p class="page-sub">紀錄只存在這台電腦的瀏覽器裡。</p>
+        <div class="list" id="historyBox"></div>
+      </div>
+    </section>
+
+    <!-- 聲音設定 -->
+    <section id="view-voices" class="view">
+      <div class="page">
+        <div class="page-head">
+          <h1>聲音設定</h1>
+          <span class="tag" id="ttsBadge"></span>
+        </div>
+        <p class="page-sub">選一個語音服務，再幫每位客戶挑聲音。付費服務會比瀏覽器內建自然很多。</p>
+        <h2 class="sec-title">語音服務</h2>
+        <div class="svc-grid" id="ttsProviders"></div>
+        <div class="key-box hidden" id="keyBox">
+          <ol class="key-steps" id="keySteps"></ol>
+          <div class="key-row">
+            <input id="keyInput" type="password" autocomplete="off" spellcheck="false" placeholder="貼上 API 金鑰">
+            <button class="pill primary" id="btnSaveKey" type="button">儲存</button>
+          </div>
+          <p class="muted">金鑰只會存在這台電腦的 .env 檔案裡，不會上傳到別的地方。</p>
+        </div>
+        <div class="model-row hidden" id="modelRow">
+          <span>語音模型</span>
+          <select id="ttsModel" class="select"></select>
+          <span class="muted" id="modelNote"></span>
+        </div>
+        <h2 class="sec-title">客戶的聲音</h2>
+        <div class="voice-customers" id="voiceCustomers"></div>
+      </div>
+    </section>
+
+    <!-- 我的背景 -->
+    <section id="view-rep" class="view">
+      <div class="page">
+        <div class="page-head">
+          <h1>我的背景</h1>
+          <span class="tag" id="repBadge"></span>
+        </div>
+        <p class="page-sub">客戶會用這裡的名字叫你，AI 教練也會照你的職稱和公司規定評分。</p>
+
+        <h2 class="sec-title">身分</h2>
+        <div class="form-grid">
+          <label class="field"><span>姓</span><input id="repSurname" type="text" maxlength="4" autocomplete="off" spellcheck="false"></label>
+          <label class="field"><span>名（可不填）</span><input id="repGiven" type="text" maxlength="6" autocomplete="off" spellcheck="false"></label>
+          <div class="field wide">
+            <span>客戶怎麼叫你</span>
+            <input id="repAddress" type="text" maxlength="8" autocomplete="off" spellcheck="false" aria-label="客戶怎麼叫你">
+            <div class="suggest" id="repSuggest"></div>
+          </div>
+          <div class="field wide">
+            <span>職稱</span>
+            <div class="seg" id="repRole" role="group" aria-label="職稱">
+              <button type="button" data-role="broker">營業員</button>
+              <button type="button" data-role="wealth">理財專員</button>
+              <button type="button" data-role="sales">業務員</button>
+              <button type="button" data-role="custom">自訂</button>
+            </div>
+            <input id="repCustomTitle" class="hidden" type="text" maxlength="10" autocomplete="off" placeholder="例如：財富管理顧問" aria-label="自訂職稱">
+          </div>
+        </div>
+
+        <h2 class="sec-title">公司</h2>
+        <div class="form-grid">
+          <label class="field"><span>公司名稱</span><input id="repCompany" type="text" maxlength="20" autocomplete="off"></label>
+          <label class="field"><span>分公司</span><input id="repBranch" type="text" maxlength="20" autocomplete="off"></label>
+          <label class="field"><span>年資（年）</span><input id="repYears" type="number" min="0" max="50" step="1" inputmode="numeric"></label>
+        </div>
+
+        <h2 class="sec-title">負責的商品</h2>
+        <label class="field"><textarea id="repProducts" rows="3" placeholder="一行一項，例如：台股 ETF 定期定額" aria-label="負責的商品"></textarea></label>
+
+        <h2 class="sec-title">背景知識</h2>
+        <p class="muted form-note">AI 教練會把這裡當成正確答案，沒寫的不會自己猜。</p>
+        <label class="field">
+          <textarea id="repKnowledge" rows="8" maxlength="2000" placeholder="公司規定、手續費方案、商品重點。例如：手續費依公司公告的折讓方案，不可私下退佣。" aria-label="背景知識"></textarea>
+          <small class="counter" id="repKnowledgeCount"></small>
+        </label>
+
+        <h2 class="sec-title">客戶會這樣開場</h2>
+        <div class="rep-preview" id="repPreview"></div>
+
+        <div class="form-foot">
+          <button class="pill ghost" id="btnRepReset" type="button">恢復預設</button>
+          <button class="pill primary" id="btnRepSave" type="button" disabled>儲存</button>
+        </div>
+        <p class="muted">只存在這台電腦的 profile.json，下一通電話開始生效。</p>
+      </div>
+    </section>
+
+    <!-- 情境設定 -->
+    <section id="view-scenarios" class="view">
+      <div class="page">
+        <div class="page-head">
+          <h1>情境設定</h1>
+          <button class="pill primary" id="btnNewScenario" type="button"><span data-icon="plus"></span>新增情境</button>
+        </div>
+        <p class="page-sub">新增或修改客戶情境，存好之後首頁馬上可以練習。</p>
+        <div class="list" id="scnAdminList"></div>
+      </div>
+    </section>
+
+    <!-- 情境編輯 -->
+    <section id="view-editor" class="view">
+      <div class="page">
+        <div class="report-top">
+          <button class="link" id="btnEditorBack" type="button">情境設定</button>
+        </div>
+        <h1 class="report-title" id="editorTitle"></h1>
+        <div class="ai-box">
+          <textarea id="aiDesc" rows="3" maxlength="800" aria-label="用一段話描述客戶和狀況" placeholder="用一段話描述客戶和狀況，例如：45 歲醫師，年終領了 300 萬想全部買美股科技股，其實明年要買房…"></textarea>
+          <div class="ai-row">
+            <span class="muted" id="aiNote">AI 會把整個情境填好，你再修改。</span>
+            <button class="pill primary sm" id="btnAiDraft" type="button">用 AI 幫我寫</button>
+          </div>
+        </div>
+        <!-- 用 div 不用 form：按 Enter 不會直接送出 -->
+        <div id="editorForm"></div>
+        <div class="form-foot">
+          <button class="pill ghost" id="btnEditorCancel" type="button">取消</button>
+          <button class="pill primary" id="btnEditorSave" type="button">儲存</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- 通話 -->
+    <section id="view-call" class="view">
+      <div class="call">
+        <header class="call-top">
+          <button class="icon-btn" id="btnBack" type="button" title="返回"><span data-icon="back"></span></button>
+          <div class="call-title">
+            <div class="t1" id="callTitle"></div>
+            <div class="t2" id="callSub"></div>
+          </div>
+          <div class="call-actions">
+            <span class="timer" id="callTimer"><span id="callTimerText">00:00</span></span>
+            <div class="seg" id="modeSeg">
+              <button data-mode="practice" class="on" type="button">練習</button>
+              <button data-mode="exam" type="button">考核</button>
+            </div>
+            <button class="pill danger" id="btnEnd" type="button"><span data-icon="phoneOff"></span>結束並評分</button>
+          </div>
+        </header>
+
+        <div class="call-body">
+          <section class="stage">
+            <div class="stage-center">
+              <div class="orb" id="avatarStage">
+                <span class="halo h1"></span><span class="halo h2"></span><span class="halo h3"></span>
+                <div class="orb-avatar" id="avatarBox"></div>
+              </div>
+              <div class="stage-name" id="custName"></div>
+              <div class="stage-state" id="custState"><span id="custStateText"></span></div>
+              <p class="caption" id="caption"></p>
+              <div class="tip-card" id="tipCard" role="status" aria-live="polite" aria-atomic="true">
+                <span class="tip-k"><span data-icon="bulb"></span>教練提示</span>
+                <p class="tip" id="tipText"></p>
+              </div>
+              <div class="trust" id="trustBox">
+                <span>客戶信任度</span>
+                <div class="trust-bar"><div class="trust-fill" id="trustFill"></div></div>
+                <b id="trustVal">0</b>
+                <em class="trust-delta" id="trustDelta"></em>
+                <span class="trust-label" id="trustLabel"></span>
+              </div>
+              <span class="tag exam-tag">考核模式 · 結束後公布</span>
+            </div>
+
+            <div class="composer">
+              <div class="interim" id="interim"></div>
+              <div class="composer-box">
+                <div class="menu-wrap">
+                  <button class="icon-btn round-btn" id="btnChips" type="button" title="示範句"><span data-icon="plus"></span></button>
+                  <div class="menu hidden" id="chips"></div>
+                </div>
+                <input id="textInput" type="text" autocomplete="off" placeholder="說話，或輸入你要回客戶的話">
+                <button class="mic" id="btnMic" type="button" title="點一下開始說話（空白鍵）" aria-label="麥克風">
+                  <span class="mic-level" id="micLevel"></span>
+                  <span data-icon="mic"></span>
+                </button>
+                <button class="send" id="btnSend" type="button" title="送出" aria-label="送出"><span data-icon="arrowUp"></span></button>
+              </div>
+              <div class="composer-foot">
+                <span class="mic-state" id="micState" aria-live="polite"></span>
+                <label class="switch"><input type="checkbox" id="autoListen" checked><span class="knob"></span>客戶講完自動開麥</label>
+                <span class="hint" id="micHint">停頓 1.5 秒自動送出 · 建議戴耳機</span>
+              </div>
+            </div>
+          </section>
+
+          <aside class="side" id="coachPanel">
+            <section class="coach-live" aria-label="AI 教練">
+              <div class="coach-sec">
+                <h4>檢核清單<span class="count" id="checkCount"></span></h4>
+                <div class="ck-bar"><i id="checkBar"></i></div>
+                <ul class="checklist" id="checklist"></ul>
+              </div>
+              <div class="coach-sec">
+                <h4>合規警示<span class="count danger" id="alertCount"></span></h4>
+                <ul class="alerts" id="alerts" aria-live="assertive"></ul>
+              </div>
+              <div class="exam-mask" id="examMask">
+                <span data-icon="lock"></span>
+                <b>考核模式</b>
+                <span>回饋會在通話結束後一起公布</span>
+              </div>
+            </section>
+            <details class="side-more">
+              <summary>本次任務與客戶資料</summary>
+              <div class="coach-sec"><h4>本次任務</h4><p id="taskText"></p></div>
+              <div class="coach-sec"><h4>客戶資料</h4><dl class="profile" id="custProfile"></dl></div>
+            </details>
+            <div class="side-head">逐字稿 <span id="turnCount"></span></div>
+            <div class="transcript" id="transcript" role="log" aria-label="通話逐字稿"></div>
+          </aside>
+        </div>
+      </div>
+    </section>
+
+    <!-- 評分報告 -->
+    <section id="view-report" class="view">
+      <div class="page report">
+        <div class="report-top">
+          <button class="link" id="btnCrumb" type="button"></button>
+          <div class="head-actions no-print">
+            <button class="pill ghost" id="btnPrint" type="button"><span data-icon="printer"></span>列印</button>
+            <button class="pill" id="btnHome" type="button">換情境</button>
+            <button class="pill primary" id="btnRetry" type="button"><span data-icon="retry"></span>再練一次</button>
+          </div>
+        </div>
+        <h1 class="report-title" id="reportTitle"></h1>
+        <p class="report-meta" id="reportMeta"></p>
+
+        <div class="score-hero">
+          <div class="score-ring">
+            <svg viewBox="0 0 120 120"><circle class="track" cx="60" cy="60" r="52"/><circle class="prog" id="scoreArc" cx="60" cy="60" r="52"/></svg>
+            <div class="score-num"><b id="scoreNum">0</b></div>
+          </div>
+          <div class="score-text">
+            <span class="tag" id="gradeBadge"></span>
+            <p id="reportSummary"></p>
+          </div>
+        </div>
+        <div class="stats" id="reportStats"></div>
+        <div id="reportNotice"></div>
+
+        <h2 class="sec-title">能力分析</h2>
+        <div class="analysis">
+          <div id="radar"></div>
+          <div class="dim-bars" id="dimBars"></div>
+        </div>
+
+        <h2 class="sec-title">合規檢核</h2>
+        <div id="complianceBox"></div>
+
+        <h2 class="sec-title">逐項回饋</h2>
+        <div class="feedback-list" id="dimCards"></div>
+
+        <div class="two-col">
+          <div><h2 class="sec-title">做得好</h2><ul class="bullets good" id="strengths"></ul></div>
+          <div><h2 class="sec-title">可以更好</h2><ul class="bullets warn" id="improvements"></ul></div>
+        </div>
+
+        <details class="transcript-details">
+          <summary>完整對話逐字稿</summary>
+          <div class="transcript static" id="reportTranscript"></div>
+        </details>
+        <p class="footnote">評分由 AI 產生，標準待主管校準，不作為正式考核依據。</p>
+      </div>
+    </section>
+  </main>
+</div>
+
+<!-- 來電 / 撥號 -->
+<div id="callOverlay" class="overlay hidden" role="dialog" aria-modal="true" aria-labelledby="phoneName">
+  <div class="modal call-modal">
+    <div class="call-avatar"><span class="ring"></span><span class="ring r2"></span><div class="avatar" id="phoneAvatarBox"></div></div>
+    <h2 id="phoneName"></h2>
+    <div class="call-status" id="phoneStatus"></div>
+    <div class="call-scn" id="phoneScn"></div>
+    <div class="call-buttons">
+      <div class="cb"><button class="round decline" id="btnDecline" type="button" aria-label="取消"><span data-icon="x"></span></button><span>取消</span></div>
+      <div class="cb"><button class="round accept" id="btnAccept" type="button" aria-label="接聽"><span data-icon="phone"></span></button><span id="acceptLabel">接聽</span></div>
+    </div>
+    <div class="modal-foot"><span data-icon="headphones"></span>建議戴耳機，客戶的聲音才不會被麥克風收進去</div>
+  </div>
+</div>
+
+<!-- 評分中 -->
+<div id="evalOverlay" class="overlay hidden">
+  <div class="modal eval-modal">
+    <div class="spinner"></div>
+    <h2>正在產生評分報告</h2>
+    <p class="sub" id="evalNote"></p>
+    <ol class="eval-steps" id="evalSteps">
+      <li>整理對話逐字稿</li>
+      <li>檢核合規用語</li>
+      <li>評估六大面向</li>
+      <li>產生建議說法</li>
+    </ol>
+  </div>
+</div>
+
+<div id="toasts" aria-live="polite"></div>
+
+<script src="avatars.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

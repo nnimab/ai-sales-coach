@@ -1,0 +1,13 @@
+# 金鑰與個人設定：不要上傳
+.env
+voices.json
+profile.json
+
+# 講師自己新增或修改的情境（含隱藏設定），和 profile.json 一樣只留在這台電腦；要分享就刪掉這行
+scenarios/custom/
+
+# 程式自動產生的檔案
+tts_cache/
+__pycache__/
+*.pyc
+*.tmp

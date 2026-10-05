@@ -1,7 +1,9 @@
-"""AI 理專對練教練：本機 demo 伺服器（只用 Python 標準函式庫，不需安裝套件）。"""
+"""AI 理專對練教練：本機 demo 伺服器（只用 Python 標準函式庫，不需安裝套件）。
+同一份程式也能放到 Vercel（app.py 包成 WSGI），雲端模式的資料改存 Upstash Redis。"""
 
 import ctypes
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -9,7 +11,6 @@ import secrets
 import socket
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 import urllib.error
@@ -20,7 +21,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
+import chatgpt_brain
+import storage
 import tts
+import websession
+from storage import StoreError, atomic_write_text  # noqa: F401（atomic_write_text 留給舊的呼叫端）
 
 ROOT = Path(__file__).resolve().parent
 WEB_DIR = (ROOT / "web").resolve()
@@ -66,7 +71,13 @@ CUSTOMER_RULES = """【扮演規則】
 
 
 class LLMError(Exception):
-    pass
+    """fallback：可以換下一個大腦再試；started：已經吐出部分內容，不能再換。"""
+
+    def __init__(self, message, fallback=False, started=False, code=""):
+        super().__init__(message)
+        self.fallback = fallback
+        self.started = started
+        self.code = code
 
 
 class Cancelled(Exception):
@@ -88,12 +99,32 @@ def load_env():
             value = value.split(" #", 1)[0].strip().strip('"').strip("'")
             env[key.strip()] = value
     for key, value in os.environ.items():
-        if key.startswith(("LLM_", "OPENAI_", "AZURE_OPENAI_", "ELEVENLABS_", "GEMINI_", "YATING_", "TTS_")) or key in ("OLLAMA_BASE_URL", "OLLAMA_MODEL", "PORT"):
+        if key.startswith(ENV_PREFIXES) or key in ("PORT", "ALLOWED_HOSTS", "CLOUD_URL"):
             env[key] = value
     return env
 
 
-def build_providers(env):
+# 系統環境變數只讀這些開頭的（Vercel 的設定都放環境變數）；PROFILE_ 以前漏了，PROFILE_LOCKED 設在環境變數沒作用
+ENV_PREFIXES = (
+    "LLM_", "OPENAI_", "AZURE_OPENAI_", "ELEVENLABS_", "GEMINI_", "YATING_", "TTS_",
+    "CHATGPT_", "APP_", "AUTH_", "ADMIN_", "PROFILE_", "BRAIN_", "LIVE_", "STORE_", "KV_", "UPSTASH_",
+    "OLLAMA_", "VERCEL", "SESSION_",
+)
+
+
+TTS_MAX_BYTES = 4_000_000  # Vercel 一個回應最多 4.5 MB
+
+
+def detect_cloud(env):
+    """放在 Vercel（或資料夾不能寫）就是雲端模式；本機用 start.bat 不需要任何新設定。"""
+    if (env.get("APP_MODE") or "").strip().lower() == "cloud":
+        return True
+    if any(env.get(k) or os.environ.get(k) for k in ("VERCEL", "VERCEL_ENV", "VERCEL_URL")):
+        return True
+    return not os.access(ROOT, os.W_OK)
+
+
+def build_providers(env, on_cloud=False):
     ollama_model = env.get("OLLAMA_MODEL") or "qwen3.5:9b"
     azure_endpoint = (env.get("AZURE_OPENAI_ENDPOINT") or "").rstrip("/")
     if azure_endpoint and not azure_endpoint.endswith("/openai/v1"):
@@ -103,6 +134,7 @@ def build_providers(env):
     openai_key = env.get("OPENAI_API_KEY") or ""
     openai_model = env.get("OPENAI_MODEL") or "gpt-4.1-mini"
     gemini_key = env.get("GEMINI_API_KEY") or ""
+    gemini_model = env.get("GEMINI_MODEL") or "gemini-3.8-flash"
     return {
         "ollama": {
             "id": "ollama",
@@ -111,7 +143,8 @@ def build_providers(env):
             "base_url": (env.get("OLLAMA_BASE_URL") or "http://127.0.0.1:11434").rstrip("/"),
             "model": ollama_model,
             "api_key": "",
-            "configured": True,
+            # 雲端沒有本機顯卡：要另外架 Ollama 並設定 OLLAMA_BASE_URL 才能用
+            "configured": not on_cloud or bool(env.get("OLLAMA_BASE_URL")),
         },
         "azure": {
             "id": "azure",
@@ -133,13 +166,13 @@ def build_providers(env):
             "api_key": openai_key,
             "configured": bool(openai_key),
         },
-        # 通話由 Gemini Live 即時語音包辦（聽、想、講，可以插話）；教練和評分用 Gemini 文字模型
+        # Gemini 文字模型（客戶、教練、評分）；即時通話（Gemini Live）是另一個開關 LIVE_ENABLED
         "gemini": {
             "id": "gemini",
-            "label": "Gemini 3.8 Live（即時對話）",
+            "label": f"Gemini（{gemini_model}）",
             "kind": "openai",
             "base_url": (env.get("GEMINI_OPENAI_URL") or "https://generativelanguage.googleapis.com/v1beta/openai").rstrip("/"),
-            "model": env.get("GEMINI_MODEL") or "gemini-3.8-flash",
+            "model": gemini_model,
             "fallbacks": ("gemini-3.1-flash-lite", "gemini-3.5-flash"),  # 新模型常塞車（免費版尤其），改用這些
             # 即時教練每句都要跑，用快的小模型、少思考；最後評分還是用上面的主要模型
             "coach_model": env.get("GEMINI_COACH_MODEL") or "gemini-3.1-flash-lite",
@@ -147,21 +180,187 @@ def build_providers(env):
             "coach_reasoning_effort": env.get("GEMINI_COACH_REASONING") or "minimal",
             "api_key": gemini_key,
             "configured": bool(gemini_key),
-            "live": True,
             "json_schema": True,
             "reasoning_effort": "low",
+        },
+        # 用使用者自己的 ChatGPT 方案（Sign in with ChatGPT）；模型和登入狀態每次請求再填
+        "chatgpt": {
+            "id": "chatgpt",
+            "label": "ChatGPT 訂閱",
+            "kind": "responses",
+            "base_url": "",
+            "model": "",
+            "coach_model": "",
+            "api_key": "",
+            "configured": False,
         },
     }
 
 
 ENV = load_env()
-PROVIDERS = build_providers(ENV)
-_wanted = ENV.get("LLM_PROVIDER") or "ollama"
-STATE = {"provider": _wanted if _wanted in PROVIDERS and PROVIDERS[_wanted]["configured"] else "ollama"}
+ON_CLOUD = detect_cloud(ENV)
+STORE = storage.open_store(ROOT, ENV, ON_CLOUD)
+PROVIDERS = build_providers(ENV, ON_CLOUD)
+CHATGPT_CFG = chatgpt_brain.ChatGPTConfig.from_env(ENV, ON_CLOUD)
+CHATGPT = chatgpt_brain.ChatGPT(CHATGPT_CFG, STORE)
+# 每個請求的使用者（uid、名字、角色）；ThreadingHTTPServer 和 app.py 都是一個請求一條執行緒
+CTX = threading.local()
+DEFAULT_BRAIN = "gemini" if ON_CLOUD else "ollama"
+OWNER_UID = "owner"
+
+_log_times = {}
 
 
-def current_provider():
-    return PROVIDERS[STATE["provider"]]
+def log_once(key, text, every=60):
+    """同一種錯誤一分鐘只印一次：Redis 斷線時每次輪詢都會遇到。"""
+    now = time.monotonic()
+    if now - _log_times.get(key, -every) >= every:
+        _log_times[key] = now
+        print(f"[{time.strftime('%H:%M:%S')}] {text}", file=sys.stderr)
+
+
+def setting(key, default=""):
+    """畫面上改的設定：本機在 .env，雲端在 Redis；都沒有就看環境變數。"""
+    try:
+        value = STORE.settings().get(key)
+    except StoreError as e:
+        log_once("settings", f"[設定] 讀不到資料庫，先用環境變數：{e}")
+        value = None
+    return value or ENV.get(key) or default
+
+
+def set_setting(key, value):
+    STORE.set_setting(key, value)
+
+
+def cg_model_setting(key):
+    # 「自動」存成 auto：存空字串的話會退回環境變數或啟動時讀到的舊值
+    value = setting(key)
+    return "" if value == "auto" else value
+
+
+def cg_mode():
+    return CHATGPT_CFG.mode
+
+
+def cg_uid():
+    """ChatGPT 帳號是誰的：雲端同步模式整個網站只有一個擁有者帳號，其他照登入的人。"""
+    if cg_mode() == "synced":
+        return OWNER_UID
+    return getattr(CTX, "uid", "") or "local"
+
+
+def cg_account(uid=None):
+    """不連網路，只看存好的帳號；讀不到就當沒登入，狀態頁不能因此掛掉。"""
+    try:
+        return CHATGPT.account_status(uid or cg_uid()) or {}
+    except Exception as e:
+        log_once("cg-account", f"[ChatGPT] 讀不到帳號資料：{e}")
+        return {}
+
+
+def cg_cooldown_until(acct):
+    try:
+        return int(acct.get("cooldown_until") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def cg_ready(acct=None):
+    """ChatGPT 現在能不能當大腦：已登入、有方案權限、不用重新登入、不在冷卻中。"""
+    if not CHATGPT_CFG.available:
+        return False
+    acct = cg_account() if acct is None else acct
+    return bool(acct.get("signed_in") and acct.get("plan_usage") and not acct.get("needs_login")
+                and cg_cooldown_until(acct) <= time.time())
+
+
+def backups():
+    raw = ENV.get("BRAIN_BACKUPS")
+    names = raw.split(",") if raw is not None else ["gemini", "ollama"]
+    return [n.strip() for n in names if n.strip() in PROVIDERS and n.strip() != "chatgpt"]
+
+
+def selected_brain():
+    want = setting("LLM_PROVIDER") or DEFAULT_BRAIN
+    return want if want in PROVIDERS else DEFAULT_BRAIN
+
+
+def main_brain():
+    """選的大腦還沒設定金鑰時，跟以前一樣改用預設的（本機 Ollama、雲端 Gemini）。ChatGPT 例外：沒登入就由備援接手。"""
+    sel = selected_brain()
+    if sel == "chatgpt" or PROVIDERS[sel]["configured"]:
+        return sel
+    return DEFAULT_BRAIN if PROVIDERS[DEFAULT_BRAIN]["configured"] else sel
+
+
+def live_enabled():
+    v = (setting("LIVE_ENABLED") or "").strip().lower()
+    if v in ("1", "true", "yes", "on"):
+        return True
+    if v in ("0", "false", "no", "off"):
+        return False
+    # 舊版沒有這個開關：選 Gemini 就是即時通話
+    return (setting("LLM_PROVIDER") or DEFAULT_BRAIN) == "gemini"
+
+
+def usable(pid, purpose, backup):
+    """purpose：chat 客戶回話、coach 即時教練、eval 評分、draft 情境草稿。"""
+    p = PROVIDERS.get(pid)
+    if p is None:
+        return False
+    if pid == "chatgpt":
+        return cg_ready()
+    if pid == "ollama":
+        if ON_CLOUD:
+            return not backup and p["configured"]  # 雲端不拿 Ollama 當備援
+        # 本機模型當備援：客戶和教練要等它暖好（冷啟動十幾秒）；評分和草稿照以前，直接用
+        return not backup or purpose in ("eval", "draft") or local_warm()
+    return p["configured"]
+
+
+def bind_brain(pid):
+    """複製一份大腦設定，綁上這次請求的 ChatGPT 帳號和模型。"""
+    p = dict(PROVIDERS[pid])
+    if pid == "chatgpt":
+        model = cg_model_setting("CHATGPT_MODEL")
+        p.update(
+            uid=cg_uid(),
+            model=model,
+            coach_model=cg_model_setting("CHATGPT_COACH_MODEL") or model,
+            label=f"ChatGPT 訂閱（{model}）" if model else "ChatGPT 訂閱",
+            configured=True,
+            reasoning_effort=CHATGPT_CFG.reasoning_effort,
+            coach_reasoning_effort=CHATGPT_CFG.coach_reasoning_effort,
+            fallbacks=(),
+        )
+    return p
+
+
+def brain_chain(purpose):
+    """這次要依序試的大腦：主要的在前，備援只在主要是 ChatGPT 或 Gemini 時才有。"""
+    sel = main_brain()
+    ids = [sel] if usable(sel, purpose, False) else []
+    if sel in ("chatgpt", "gemini"):
+        for b in backups():
+            if b != sel and b not in ids and usable(b, purpose, True):
+                ids.append(b)
+    if not ids:
+        # 都不能用：退回預設的大腦，讓它回報自己的原因
+        ids = [DEFAULT_BRAIN if usable(DEFAULT_BRAIN, purpose, False) else sel]
+    return [bind_brain(i) for i in ids]
+
+
+def ollama_next_backup():
+    """本機模型是不是下一個會接手的備援：是的話先在背景暖好，雲端塞車時才接得上。"""
+    if ON_CLOUD:
+        return False
+    sel = main_brain()
+    if sel not in ("chatgpt", "gemini"):
+        return False
+    order = [sel] + [b for b in backups() if b != sel]
+    ok = [b for b in order if usable(b, "eval", b != sel)]
+    return len(ok) >= 2 and ok[1] == "ollama"
 
 
 def coach_provider(p):
@@ -177,9 +376,11 @@ def coach_provider(p):
 
 
 def reload_env():
-    global ENV, PROVIDERS
+    global ENV, PROVIDERS, CHATGPT_CFG, CHATGPT
     ENV = load_env()
-    PROVIDERS = build_providers(ENV)
+    PROVIDERS = build_providers(ENV, ON_CLOUD)
+    CHATGPT_CFG = chatgpt_brain.ChatGPTConfig.from_env(ENV, ON_CLOUD)
+    CHATGPT = chatgpt_brain.ChatGPT(CHATGPT_CFG, STORE)
 
 
 KEY_NAMES = {"elevenlabs": "ELEVENLABS_API_KEY", "gemini": "GEMINI_API_KEY", "yating": "YATING_API_KEY"}
@@ -187,65 +388,32 @@ _KEY_RE = re.compile(r"^[A-Za-z0-9_\-.:]{8,200}$")
 
 
 def set_env_value(name, value):
-    path = ROOT / ".env"
-    lines = path.read_text(encoding="utf-8-sig").splitlines() if path.exists() else []
-    out, found = [], False
-    for line in lines:
-        if line.split("=", 1)[0].strip() == name:
-            if not found:
-                out.append(f"{name}={value}")
-            found = True
-        else:
-            out.append(line)
-    if not found:
-        out.append(f"{name}={value}")
-    atomic_write_text(path, "\n".join(out) + "\n")
-
-
-def atomic_write_text(path, text):
-    """先寫到同資料夾的暫存檔再換名：寫到一半當掉或斷電，原本的檔案也不會壞掉。"""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix="." + path.name + "-", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
-            f.write(text)
-            f.flush()
-            os.fsync(f.fileno())
-        for attempt in range(5):
-            try:
-                os.replace(tmp, path)
-                break
-            except PermissionError:  # Windows：檔案剛好被別的執行緒、防毒或編輯器開著
-                if attempt == 4:
-                    raise
-                time.sleep(0.1)
-    finally:
-        if os.path.exists(tmp):
-            os.unlink(tmp)
+    storage.set_env_value(ROOT / ".env", name, value)
 
 
 # ---------------------------------------------------------------- 語音（付費 TTS）
 
-VOICES_FILE = ROOT / "voices.json"
-_voice_lock = threading.Lock()
-_resolve_lock = threading.Lock()
 _tts_sem = threading.BoundedSemaphore(3)
 _tts_cache = OrderedDict()
 _tts_cache_lock = threading.Lock()
 
 
-def _load_voice_cfg():
+def voice_cfg():
+    """聲音設定（本機 voices.json、雲端 Redis）；壞掉或讀不到就當沒設定。"""
     try:
-        return json.loads(VOICES_FILE.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        cfg = STORE.get_doc("voices")
+    except (ValueError, StoreError):
         return {}
+    return cfg if isinstance(cfg, dict) else {}
 
 
-VOICE_CFG = _load_voice_cfg()
-
-
-def save_voice_cfg():
-    atomic_write_text(VOICES_FILE, json.dumps(VOICE_CFG, ensure_ascii=False, indent=2))
+def update_voice_cfg(fn):
+    """讀出來、改、存回去，整段鎖住：同時有兩個請求在改也不會蓋掉對方。fn 丟錯就不存。"""
+    with STORE.lock("voices"):
+        cfg = voice_cfg()
+        fn(cfg)
+        STORE.put_doc("voices", cfg)
+    return cfg
 
 
 def tts_providers():
@@ -257,9 +425,10 @@ def tts_providers():
     ]
 
 
-def tts_provider_id():
+def tts_provider_id(cfg=None):
+    cfg = voice_cfg() if cfg is None else cfg
     configured = {p["id"] for p in tts_providers() if p["configured"]}
-    wanted = VOICE_CFG.get("provider") or ENV.get("TTS_PROVIDER") or ""
+    wanted = cfg.get("provider") or ENV.get("TTS_PROVIDER") or ""
     if wanted in configured:
         return wanted
     for pid in ("elevenlabs", "gemini", "yating"):
@@ -275,11 +444,12 @@ TTS_MODELS = {
 }
 
 
-def tts_model(pid):
+def tts_model(pid, cfg=None):
     if pid not in TTS_MODELS:
         return ""
+    cfg = voice_cfg() if cfg is None else cfg
     field, env_name, default, _ = TTS_MODELS[pid]
-    return VOICE_CFG.get(field) or ENV.get(env_name) or default
+    return cfg.get(field) or ENV.get(env_name) or default
 
 
 def tts_client(pid):
@@ -299,17 +469,16 @@ def customer_for(avatar):
     return {}, {}
 
 
-def assigned(pid, avatar):
-    return ((VOICE_CFG.get("assign") or {}).get(pid) or {}).get(avatar)
+def assigned(pid, avatar, cfg=None):
+    cfg = voice_cfg() if cfg is None else cfg
+    return ((cfg.get("assign") or {}).get(pid) or {}).get(avatar)
 
 
 def set_assigned(pid, avatar, voice_id, name, brief=""):
     entry = {"voice_id": voice_id, "name": name}
     if brief:
         entry["brief"] = brief
-    with _voice_lock:
-        VOICE_CFG.setdefault("assign", {}).setdefault(pid, {})[avatar] = entry
-        save_voice_cfg()
+    update_voice_cfg(lambda cfg: cfg.setdefault("assign", {}).setdefault(pid, {}).__setitem__(avatar, entry))
 
 
 def yating_default(gender):
@@ -337,26 +506,37 @@ def design_voice(avatar, brief):
     name = f"{cust.get('name', avatar)} · {time.strftime('%m/%d %H:%M')}"
     vid = tts_client("gemini").design(brief, gender, name)
     set_assigned("gemini", avatar, vid, name, brief)
-    _gemini_fallback.pop(avatar, None)
-    with _voice_lock:
-        if VOICE_CFG.pop("gemini_model_note", None) is not None:
-            save_voice_cfg()
+    STORE.eph_pop(GEMFB + avatar)
+    if "gemini_model_note" in voice_cfg():
+        update_voice_cfg(lambda cfg: cfg.pop("gemini_model_note", None))
     return vid
 
 
-# 自動設計失敗時暫用的內建聲音：只在這次開著時有效，重開程式會再試著設計
-_gemini_fallback = {}
+# 自動設計失敗時暫用的內建聲音：本機只在這次開著時有效（重開程式會再試著設計），雲端 6 小時後再試
+GEMFB = "gemfb:"
+GEMFB_TTL = 6 * 3600
+
+
+def gemini_fallback_voice(avatar):
+    try:
+        return STORE.eph_get(GEMFB + avatar)
+    except StoreError:
+        return None
 
 
 def gemini_fallback(avatar, error):
     cust, _ = customer_for(avatar)
     table = tts.GEMINI_DEFAULTS.get((cust.get("voice") or {}).get("gender")) or tts.GEMINI_DEFAULTS["female"]
     vid = table.get(tts.age_group(cust.get("age"))) or table["middle_aged"]
-    _gemini_fallback[avatar] = vid
-    with _voice_lock:
-        VOICE_CFG["gemini_model_note"] = f"自動設計聲音失敗，先暫用內建聲音（重開程式會再試）：{error}"
-        save_voice_cfg()
+    STORE.eph_set(GEMFB + avatar, vid, GEMFB_TTL)
+    note = f"自動設計聲音失敗，先暫用內建聲音（重開程式會再試）：{error}"
+    update_voice_cfg(lambda cfg: cfg.__setitem__("gemini_model_note", note))
     return vid
+
+
+def voice_lock(pid, avatar):
+    """同一位客戶的多句話會同時送來，只挑（或設計）一次；雲端多台機器也一樣。"""
+    return STORE.lock(f"resolve:{pid}:{avatar}", ttl=150, wait=140)
 
 
 def resolve_voice(pid, avatar):
@@ -368,30 +548,34 @@ def resolve_voice(pid, avatar):
     gender = (cust.get("voice") or {}).get("gender", "")
     if pid == "yating":
         return yating_default(gender)["voice_id"]
-    with _resolve_lock:  # 同一位客戶的多句話會同時送來，只挑一次
-        a = assigned(pid, avatar)
-        if a and a.get("voice_id"):
-            return a["voice_id"]
-        if pid == "gemini":
-            if avatar in _gemini_fallback:
-                return _gemini_fallback[avatar]
-            try:
-                return design_voice(avatar, voice_brief(cust))
-            except tts.TTSError as e:
-                if e.code in (401, 403, 429):  # 金鑰或額度的問題，換內建聲音也一樣不能用
-                    raise
-                return gemini_fallback(avatar, e)
-        client = tts_client(pid)
-        for row in client.library(gender, tts.age_group(cust.get("age"))):
-            if row["public_owner_id"]:
-                vid = client.add_shared(row["public_owner_id"], row["voice_id"], f"AI對練-{cust.get('name', avatar)}")
-                set_assigned(pid, avatar, vid, row["name"])
-                return vid
+    try:
+        with voice_lock(pid, avatar):
+            return _pick_voice(pid, avatar, cust, gender)
+    except StoreError:
+        raise tts.TTSError("聲音設定暫時存取不了，請再試一次", 503) from None
+
+
+def _pick_voice(pid, avatar, cust, gender):
+    a = assigned(pid, avatar)
+    if a and a.get("voice_id"):
+        return a["voice_id"]
+    if pid == "gemini":
+        fb = gemini_fallback_voice(avatar)
+        if fb:
+            return fb
+        try:
+            return design_voice(avatar, voice_brief(cust))
+        except tts.TTSError as e:
+            if e.code in (401, 403, 429):  # 金鑰或額度的問題，換內建聲音也一樣不能用
+                raise
+            return gemini_fallback(avatar, e)
+    client = tts_client(pid)
+    for row in client.library(gender, tts.age_group(cust.get("age"))):
+        if row["public_owner_id"]:
+            vid = client.add_shared(row["public_owner_id"], row["voice_id"], f"AI對練-{cust.get('name', avatar)}")
+            set_assigned(pid, avatar, vid, row["name"])
+            return vid
     raise tts.TTSError("找不到適合的台灣口音聲音，請到「聲音設定」手動挑選", 409)
-
-
-TTS_CACHE_DIR = ROOT / "tts_cache"
-_CACHE_EXT = {"audio/wav": ".wav", "audio/mpeg": ".mp3"}
 
 
 def is_opening(text):
@@ -399,24 +583,22 @@ def is_opening(text):
     return bool(n) and any(_norm(sc.get("opening_line", "")) == n for sc in load_scenarios().values())
 
 
-def _cache_path(key, ctype):
-    digest = hashlib.sha1(json.dumps(key, ensure_ascii=False).encode("utf-8")).hexdigest()
-    return TTS_CACHE_DIR / (digest + _CACHE_EXT.get(ctype, ".bin"))
+def _cache_digest(key):
+    return hashlib.sha1(json.dumps(key, ensure_ascii=False).encode("utf-8")).hexdigest()
 
 
 def disk_cache_get(key):
-    for ctype in _CACHE_EXT:
-        path = _cache_path(key, ctype)
-        if path.exists():
-            return path.read_bytes(), ctype
-    return None
+    """開場白的語音快取：本機在 tts_cache/，雲端在 Redis。"""
+    try:
+        return STORE.tts_get(_cache_digest(key))
+    except StoreError:
+        return None
 
 
 def disk_cache_put(key, audio, ctype):
     try:
-        TTS_CACHE_DIR.mkdir(exist_ok=True)
-        _cache_path(key, ctype).write_bytes(audio)
-    except OSError:
+        STORE.tts_put(_cache_digest(key), audio, ctype)
+    except StoreError:
         pass
 
 
@@ -428,7 +610,7 @@ def synthesize(pid, voice_id, text):
         if hit:
             _tts_cache.move_to_end(key)
             return hit
-    # 開場白每通電話都一樣：存到硬碟，重開程式後也直接播，不再花額度
+    # 開場白每通電話都一樣：存起來（本機硬碟、雲端 Redis），重開程式後也直接播，不再花額度
     opening = is_opening(text)
     hit = disk_cache_get(key) if opening else None
     if hit:
@@ -441,10 +623,11 @@ def synthesize(pid, voice_id, text):
             audio, ctype, used = client.synthesize(voice_id, text, model)
             if used != model:
                 key = (pid, used, voice_id, text)
-                with _voice_lock:
-                    VOICE_CFG["el_model"] = used
-                    VOICE_CFG["el_model_note"] = f"{model} 目前不能用，已自動改用 {used}"
-                    save_voice_cfg()
+                note = f"{model} 目前不能用，已自動改用 {used}"
+                try:
+                    update_voice_cfg(lambda cfg: cfg.update(el_model=used, el_model_note=note))
+                except StoreError:
+                    pass  # 聲音已經念好了，記不住新模型下次再換一次就好
         elif pid == "gemini":
             audio, ctype = client.synthesize(voice_id, text, model)
         else:
@@ -459,7 +642,8 @@ def synthesize(pid, voice_id, text):
 
 
 def tts_status():
-    pid = tts_provider_id()
+    cfg = voice_cfg()
+    pid = tts_provider_id(cfg)
     customers, seen = [], set()
     scenarios = load_scenarios().values()
     # 聲音跟著頭像走：同一個頭像的客戶共用一張卡片，名字一起列出來
@@ -474,9 +658,9 @@ def tts_status():
         gender = (c.get("voice") or {}).get("gender", "")
         voice = None
         if pid != "browser":
-            voice = assigned(pid, c["avatar"]) or (yating_default(gender) if pid == "yating" else None)
-        if pid == "gemini" and not voice and c["avatar"] in _gemini_fallback:
-            fb = _gemini_fallback[c["avatar"]]
+            voice = assigned(pid, c["avatar"], cfg) or (yating_default(gender) if pid == "yating" else None)
+        fb = gemini_fallback_voice(c["avatar"]) if pid == "gemini" and not voice else None
+        if fb:
             voice = {"voice_id": fb, "name": f"{fb}（暫用）"}
         row = {
             "avatar": c["avatar"], "name": "、".join(dict.fromkeys(names[c["avatar"]])), "age": c.get("age"), "gender": gender,
@@ -488,12 +672,15 @@ def tts_status():
     field, _, _, models = TTS_MODELS.get(pid, ("", "", "", []))
     return {
         "provider": pid,
-        "selected": VOICE_CFG.get("provider") or pid,
+        "selected": cfg.get("provider") or pid,
         "providers": tts_providers(),
-        "model": tts_model(pid),
+        "model": tts_model(pid, cfg),
         "models": [{"id": m, "label": label} for m, label in models],
-        "model_note": VOICE_CFG.get(f"{field}_note", "") if field else "",
+        "model_note": cfg.get(f"{field}_note", "") if field else "",
         "customers": customers,
+        # 雲端的金鑰只能設在 Vercel 的環境變數，畫面改成教學步驟
+        "key_source": "env" if ON_CLOUD else "file",
+        "env_names": dict(KEY_NAMES),
     }
 
 
@@ -514,9 +701,9 @@ def tts_voices(avatar):
 
 # ---------------------------------------------------------------- 業務本身的背景
 
-PROFILE_FILE = ROOT / "profile.json"  # 只存在這台電腦，不上傳（.gitignore）
+# 本機只存在這台電腦的 profile.json（不上傳，.gitignore）；雲端每個瀏覽器各自一份（PROFILE_SCOPE=shared 就共用）
 _profile_lock = threading.Lock()
-_profile_cache = {"mtime": None, "data": None, "saved": False}
+_profile_cache = {}  # uid -> {"stamp", "data", "saved"}
 
 # 各職務的規範是示範草稿，教練和評分會依這裡判斷  # 待法遵確認
 ROLES = {
@@ -612,31 +799,60 @@ def validate_profile(body):
     }
 
 
+def profile_uid():
+    if not ON_CLOUD:
+        return "local"
+    if (ENV.get("PROFILE_SCOPE") or "user").strip().lower() == "shared":
+        return "shared"
+    return getattr(CTX, "uid", "") or "shared"
+
+
 def load_profile():
-    """回傳 (背景, 有沒有存過)。檔案沒變就用快取：每次讀情境都會用到。"""
+    """回傳 (背景, 有沒有存過)。資料沒變就用快取：每次讀情境都會用到。"""
+    uid = profile_uid()
+    name = "profile:" + uid
+    defaults = dict(PROFILE_DEFAULTS, products=[]), False
     try:
-        mtime = PROFILE_FILE.stat().st_mtime_ns
-    except OSError:
-        return dict(PROFILE_DEFAULTS, products=[]), False
+        stamp = STORE.doc_stamp(name)
+    except StoreError as e:
+        log_once("profile", f"[我的背景] 讀不到資料庫，先用預設值：{e}")
+        return defaults
+    if stamp is None:
+        return defaults
     with _profile_lock:
-        if _profile_cache["mtime"] != mtime:
+        c = _profile_cache.get(uid)
+        if c is None or c["stamp"] != stamp:
             try:
-                raw = json.loads(PROFILE_FILE.read_text(encoding="utf-8-sig"))
+                raw = STORE.get_doc(name)
+                if raw is None:
+                    return defaults
                 if isinstance(raw, dict):
                     raw.pop("version", None)
                 data, saved = validate_profile(raw), True
-            except (OSError, ValueError) as e:  # 手動改壞了也不要讓通話掛掉；同一個檔案只提醒一次
-                print(f"[我的背景] profile.json 有問題，先用預設值：{e}", file=sys.stderr)
+            except StoreError as e:  # 暫時讀不到：不記快取，下次再讀
+                log_once("profile", f"[我的背景] 讀不到資料庫，先用預設值：{e}")
+                return defaults
+            except ValueError as e:  # 手動改壞了也不要讓通話掛掉；同一份資料只提醒一次
+                where = "profile.json" if not ON_CLOUD else "雲端的背景資料"
+                print(f"[我的背景] {where} 有問題，先用預設值：{e}", file=sys.stderr)
                 data, saved = dict(PROFILE_DEFAULTS, products=[]), False
-            _profile_cache.update(mtime=mtime, data=data, saved=saved)
-        data = _profile_cache["data"]
-        return dict(data, products=list(data["products"])), _profile_cache["saved"]
+            c = _profile_cache[uid] = {"stamp": stamp, "data": data, "saved": saved}
+        data = c["data"]
+        return dict(data, products=list(data["products"])), c["saved"]
 
 
 def save_profile(p):
+    uid = profile_uid()
     with _profile_lock:
-        atomic_write_text(PROFILE_FILE, json.dumps({"version": 1, **p}, ensure_ascii=False, indent=2))
-        _profile_cache.update(mtime=None, data=None, saved=False)
+        STORE.put_doc("profile:" + uid, {"version": 1, **p})
+        _profile_cache.pop(uid, None)
+
+
+def reset_profile():
+    uid = profile_uid()
+    with _profile_lock:
+        STORE.delete_doc("profile:" + uid)
+        _profile_cache.pop(uid, None)
 
 
 def rep_profile():
@@ -715,32 +931,48 @@ def _usable(d):
         return False
 
 
-def _read_dir(folder):
-    """{id: (情境, 檔案)}。只讀這一層的 *.json，所以 .trash 和寫到一半的 .tmp 都不會被讀到。"""
-    out = {}
-    if not folder.is_dir():
-        return out
-    for file in sorted(folder.glob("*.json")):
+def _builtin_items():
+    """內建情境：只讀 scenarios/ 這一層的 *.json（跟著程式一起部署，唯讀）。"""
+    for file in sorted(SCENARIO_DIR.glob("*.json")) if SCENARIO_DIR.is_dir() else ():
         try:
-            data = json.loads(file.read_text(encoding="utf-8-sig"))
-        except Exception as e:  # 單一情境檔格式錯誤時不要讓整個系統掛掉
+            yield file.name, file.read_text(encoding="utf-8-sig"), file
+        except OSError as e:
             print(f"[情境] 無法讀取 {file.name}：{e}", file=sys.stderr)
+
+
+def _custom_items():
+    """講師新增或修改的情境：本機在 scenarios/custom/，雲端在 Redis。"""
+    try:
+        return STORE.list_custom()
+    except StoreError as e:
+        log_once("custom", f"[情境] 讀不到自訂情境，先只用內建的：{e}")
+        return []
+
+
+def _read_items(items):
+    """{id: (情境, 位置)}。.trash 和寫到一半的 .tmp 都不會在 items 裡。"""
+    out = {}
+    for label, text, ref in items:
+        try:
+            data = json.loads(text)
+        except Exception as e:  # 單一情境檔格式錯誤時不要讓整個系統掛掉
+            print(f"[情境] 無法讀取 {label}：{e}", file=sys.stderr)
             continue
         if not _usable(data):
-            print(f"[情境] {file.name} 缺少必要欄位，先略過", file=sys.stderr)
+            print(f"[情境] {label} 缺少必要欄位，先略過", file=sys.stderr)
             continue
         if data["id"] in out:
-            print(f"[情境] {file.name} 的 id 重複（{data['id']}），先略過", file=sys.stderr)
+            print(f"[情境] {label} 的 id 重複（{data['id']}），先略過", file=sys.stderr)
             continue
-        out[data["id"]] = (data, file)
+        out[data["id"]] = (data, ref)
     return out
 
 
 def scenario_sources():
-    """{id: (原始情境, 檔案, 來源)}；來源：builtin 內建、modified 改過的內建、custom 講師新增。"""
-    builtin = _read_dir(SCENARIO_DIR)
+    """{id: (原始情境, 位置, 來源)}；來源：builtin 內建、modified 改過的內建、custom 講師新增。"""
+    builtin = _read_items(_builtin_items())
     out = {sid: (d, f, "builtin") for sid, (d, f) in builtin.items()}
-    for sid, (d, f) in _read_dir(CUSTOM_DIR).items():
+    for sid, (d, f) in _read_items(_custom_items()).items():
         out[sid] = (d, f, "modified" if sid in builtin else "custom")
     return out
 
@@ -800,7 +1032,6 @@ SERVER_ONLY_FIELDS = (
     ("behavior", "反應方式", 5, 1500),
     ("coach_notes", "教練重點", 5, 1000),
 )
-_scenario_lock = threading.Lock()
 
 
 class Invalid(ValueError):
@@ -1015,7 +1246,7 @@ def scenario_warnings(sc):
 def new_scenario_id(existing):
     while True:
         sid = "custom-" + secrets.token_hex(3)
-        if sid not in existing and not (CUSTOM_DIR / f"{sid}.json").exists():
+        if sid not in existing and not STORE.custom_exists(sid):
             return sid
 
 
@@ -1090,12 +1321,14 @@ def _open(provider, body, timeout=300):
         return opener.open(req, timeout=timeout)
     except urllib.error.HTTPError as e:
         detail = e.read().decode("utf-8", "replace")[:400]
-        raise LLMError(f"AI 服務回應錯誤 HTTP {e.code}：{detail}") from None
+        # 塞車（503）或次數到上限（429）：可以換備援的大腦
+        raise LLMError(f"AI 服務回應錯誤 HTTP {e.code}：{detail}", fallback=e.code in (429, 503),
+                       code=str(e.code)) from None
     except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
         reason = getattr(e, "reason", e)
         if isinstance(e, TimeoutError) or isinstance(reason, TimeoutError):
-            raise LLMError(f"AI 服務沒有回應（{provider['label']}），已逾時") from None
-        raise LLMError(f"連不到 AI 服務（{provider['label']}）：{reason}") from None
+            raise LLMError(f"AI 服務沒有回應（{provider['label']}），已逾時", fallback=True, code="timeout") from None
+        raise LLMError(f"連不到 AI 服務（{provider['label']}）：{reason}", fallback=True, code="network") from None
 
 
 def _body(provider, messages, temperature, json_schema, max_tokens):
@@ -1160,6 +1393,9 @@ def _open_with_retry(provider, body, tried=(), timeout=300):
 def stream_chat(provider, messages, temperature=0.8, json_schema=None, cancel=None, max_tokens=None,
                 timeout=300, deadline=None):
     """timeout 是每次等回應的秒數；deadline 是整段的截止時間（time.monotonic()），超過就放棄。"""
+    if provider["kind"] == "responses":
+        yield from _stream_chatgpt(provider, messages, json_schema, cancel, max_tokens, timeout, deadline)
+        return
     resp = _open_with_retry(provider, _body(provider, messages, temperature, json_schema, max_tokens), timeout=timeout)
     stripper = ThinkStripper()
     try:
@@ -1167,7 +1403,7 @@ def stream_chat(provider, messages, temperature=0.8, json_schema=None, cancel=No
             if cancel is not None and cancel.is_set():
                 raise Cancelled()
             if deadline is not None and time.monotonic() > deadline:
-                raise LLMError("教練逾時")
+                raise LLMError("教練逾時", fallback=True, code="timeout")
             line = raw.decode("utf-8", "replace").strip()
             if not line:
                 continue
@@ -1192,7 +1428,7 @@ def stream_chat(provider, messages, temperature=0.8, json_schema=None, cancel=No
                 except json.JSONDecodeError:
                     continue
                 if data.get("error"):
-                    raise LLMError(str(data["error"]))
+                    raise LLMError(str(data["error"]), fallback=True)
                 choices = data.get("choices") or []
                 piece = ((choices[0].get("delta") or {}).get("content") or "") if choices else ""
             if piece:
@@ -1205,9 +1441,51 @@ def stream_chat(provider, messages, temperature=0.8, json_schema=None, cancel=No
         if tail:
             yield tail
     except OSError as e:  # 讀到一半逾時或斷線：當成 AI 服務的問題，不要變成 HTTP 500
-        raise LLMError(f"AI 服務沒有回應：{e}") from None
+        raise LLMError(f"AI 服務沒有回應：{e}", fallback=True, code="network") from None
     finally:
         resp.close()
+
+
+def _stream_chatgpt(provider, messages, json_schema, cancel, max_tokens, timeout, deadline):
+    """ChatGPT 方案只能用 Responses API：system 併成 instructions，其餘照順序放 input；不送 temperature 和字數上限。
+    用量上限的冷卻、換新 token、拿掉不支援的欄位都由 chatgpt_brain 處理；這裡只把錯誤換成 LLMError。"""
+    uid = provider.get("uid") or cg_uid()
+    instructions = "\n\n".join(m["content"] for m in messages if m["role"] == "system")
+    items = [{"role": m["role"], "content": m["content"]} for m in messages if m["role"] in ("user", "assistant")]
+    # 客戶回話（有字數上限、不是 JSON）講完第一句完整的話就收，跟其他大腦的 max_tokens 一樣短
+    max_chars = CHATGPT_CFG.chat_max_chars if json_schema is None and max_tokens else None
+    started = False
+    gen = None
+    try:
+        # 沒指定模型（""）就用帳號清單的第一個（清單會快取 10 分鐘）
+        gen = CHATGPT.stream(
+            uid, instructions, items, model=provider.get("model") or "", json_schema=json_schema,
+            reasoning_effort=provider.get("reasoning_effort") or "",
+            timeout=timeout, deadline=deadline, cancel=cancel, max_chars=max_chars,
+        )
+        stripper = ThinkStripper()
+        for piece in gen:
+            if cancel is not None and cancel.is_set():
+                raise Cancelled()
+            if deadline is not None and time.monotonic() > deadline:
+                raise LLMError("教練逾時", fallback=True, started=started, code="timeout")
+            out = stripper.feed(piece)
+            if out:
+                started = True
+                yield out
+        tail = stripper.flush()
+        if tail:
+            yield tail
+    except chatgpt_brain.BrainError as e:
+        if cancel is not None and cancel.is_set():
+            raise Cancelled() from None
+        raise LLMError(str(e) or "ChatGPT 暫時不能用", fallback=e.fallback, started=started or e.started,
+                       code=e.code) from None
+    except OSError as e:
+        raise LLMError(f"ChatGPT 沒有回應：{e}", fallback=True, started=started, code="network") from None
+    finally:
+        if gen is not None:
+            gen.close()
 
 
 def parse_json_loose(text):
@@ -1231,19 +1509,22 @@ def complete_json(provider, messages, schema, temperature=0.2, cancel=None, max_
     return parse_json_loose(text)
 
 
-def complete_json_backup(provider, messages, schema, temperature=0.2, cancel=None):
-    """回傳 (結果, 實際用的大腦)。Gemini 塞車（免費版尖峰很常見）時，改用本機模型，教練和評分才不會停擺。"""
-    try:
-        return complete_json(provider, messages, schema, temperature, cancel), provider
-    except LLMError as e:
-        busy = "HTTP 503" in str(e) or "HTTP 429" in str(e)
-        if not (busy and provider["id"] == "gemini"):
-            raise
-        error = e
-    try:
-        return complete_json(PROVIDERS["ollama"], messages, schema, temperature, cancel), PROVIDERS["ollama"]
-    except LLMError:
-        raise error from None  # 本機也不能用，就回報原本的原因
+def run_chain(chain, fn):
+    """依序試每個大腦，回傳 (結果, 實際用的大腦)。主要的大腦塞車、逾時或用量到上限時換下一個，
+    評分和草稿才不會停擺；全部都不行就回報主要大腦的原因。fn(大腦, 是不是最後一個)。"""
+    first = None
+    for i, p in enumerate(chain):
+        last = i == len(chain) - 1
+        try:
+            return fn(p, last), p
+        except LLMError as e:
+            if first is None:
+                first = e
+            if not e.fallback or last:
+                break
+            print(f"[{time.strftime('%H:%M:%S')}] {p['label']} 不能用，改用 {chain[i + 1]['label']}：{str(e)[:80]}",
+                  file=sys.stderr)
+    raise first
 
 
 # 旁聽教練只保留最新一次：業務開口時取消還沒跑完的舊分析，避免本機 GPU 排隊拖慢客戶回話
@@ -1753,21 +2034,193 @@ def live_setup(sc, handle=""):
 # ---------------------------------------------------------------- 狀態
 
 
-def status():
-    p = current_provider()
+def using(verb, p):
+    """「暫用 Gemini」「暫用本機模型」：英文名字前面空一格。"""
+    name = {"gemini": "Gemini", "ollama": "本機模型", "chatgpt": "ChatGPT"}.get(p["id"], p["label"])
+    return f"{verb} {name}" if name[:1].isascii() else verb + name
+
+
+def cg_selectable(acct):
+    """選單上 ChatGPT 能不能選：已登入又有方案權限（用量冷卻中也算，備援會先接手）。"""
+    return bool(CHATGPT_CFG.available and acct.get("signed_in") and acct.get("plan_usage") and not acct.get("needs_login"))
+
+
+ENV_HINTS = {"gemini": "GEMINI_API_KEY", "openai": "OPENAI_API_KEY",
+             "azure": "AZURE_OPENAI_ENDPOINT 和 AZURE_OPENAI_API_KEY", "ollama": "OLLAMA_BASE_URL"}
+
+
+def brain_problem(pid):
+    """這個大腦在這裡能不能選；不能就回原因（本機和雲端的做法不同）。"""
+    if pid == "chatgpt":
+        acct = cg_account()
+        if cg_selectable(acct):
+            return ""
+        mode = cg_mode()
+        if not CHATGPT_CFG.available:
+            return CHATGPT_CFG.blocked_reason or "這裡不能用 ChatGPT 方案"
+        if mode == "synced":
+            if acct.get("needs_login"):
+                return "ChatGPT 登入過期：請在本機版按『登入並同步到雲端』"
+            if not acct.get("signed_in"):
+                return "還沒同步：請在本機版按『登入並同步到雲端』"
+        if acct.get("needs_login"):
+            return "ChatGPT 要重新登入：請到「AI 大腦」再登入一次"
+        if not acct.get("signed_in"):
+            return "請先到「AI 大腦」用 ChatGPT 登入"
+        return "這個帳號沒有允許使用 ChatGPT 方案，請重新登入並允許"
+    if PROVIDERS[pid]["configured"]:
+        return ""
+    if ON_CLOUD:
+        return f"請到 Vercel → Settings → Environment Variables 新增 {ENV_HINTS.get(pid, '金鑰')} 後 Redeploy"
+    where = "請先到「聲音設定」選 Gemini 貼上金鑰" if pid == "gemini" else "請編輯 .env 後重新啟動"
+    return f"這個選項還沒設定金鑰，{where}"
+
+
+def json_timeout(p, last):
+    # 評分和草稿：ChatGPT 後面還有備援時，等 2 分鐘就換（推理模型第一個字可能來得比較慢）
+    return 120 if p["kind"] == "responses" and not last else 300
+
+
+def is_backup(p):
+    """這次回答的不是選的大腦（例如 ChatGPT 用量到上限或還沒同步，由 Gemini 接手）。"""
+    return p["id"] != main_brain()
+
+
+def labeled(p):
+    """實際用的大腦；是備援就在名字後面註明。"""
+    return dict(p, label=p["label"] + "（備援）") if is_backup(p) else p
+
+
+def chatgpt_problem(acct):
+    """ChatGPT 現在為什麼不能用（給狀態列的短句）；能用就回空字串。"""
+    if not CHATGPT_CFG.available:
+        return CHATGPT_CFG.blocked_reason or "這裡不能用 ChatGPT 方案"
+    synced = cg_mode() == "synced"
+    # 先看要不要重新登入：續期失敗後 token 會被清掉，signed_in 也會是 false
+    if acct.get("needs_login"):
+        return "ChatGPT 登入過期：請在本機版按『登入並同步到雲端』" if synced else "ChatGPT 要重新登入"
+    if not acct.get("signed_in"):
+        return "ChatGPT 還沒同步" if synced else "ChatGPT 未登入"
+    if not acct.get("plan_usage"):
+        return "這個帳號不能用 ChatGPT 方案"
+    if cg_cooldown_until(acct) > time.time():
+        return "ChatGPT 用量已達上限"
+    return ""
+
+
+def cloud_sync_info():
+    """本機「雲端版」區塊：網址、有沒有設定好、上次同步的結果（不含任何金鑰或憑證）。"""
+    return {
+        "url": ENV.get("CLOUD_URL") or "",
+        "configured": bool(ENV.get("CLOUD_URL") and ENV.get("CHATGPT_SYNC_KEY")),
+        **CHATGPT.cloud_sync_status(),  # last_sync_at（秒）、last_sync_email、last_error
+    }
+
+
+def chatgpt_info(acct):
+    mode = cg_mode()
     info = {
-        "provider": p["id"],
+        "mode": mode,
+        "available": CHATGPT_CFG.available,
+        "blocked_reason": CHATGPT_CFG.blocked_reason,
+        "signed_in": bool(acct.get("signed_in")),
+        "plan_usage": bool(acct.get("plan_usage")),
+        "needs_login": bool(acct.get("needs_login")),
+        "email": acct.get("email") or "",
+        "model": cg_model_setting("CHATGPT_MODEL"),
+        "coach_model": cg_model_setting("CHATGPT_COACH_MODEL"),
+        "cooldown_until": cg_cooldown_until(acct),
+        "manage_usage_url": chatgpt_brain.MANAGE_USAGE_URL,
+        "synced": mode == "synced",
+        "sync_enabled": sync_enabled(),
+        "problem": chatgpt_problem(acct),
+    }
+    if not ON_CLOUD:
+        info["cloud"] = cloud_sync_info()
+    return info
+
+
+def setup_problems():
+    """雲端還沒設定好的地方（本機一律空的）。"""
+    if not ON_CLOUD:
+        return []
+    out = []
+    secret = ENV.get("APP_SECRET") or ""
+    if not secret:
+        out.append("還沒設定 APP_SECRET（40 個以上的亂碼）")
+    elif len(secret) < 32:
+        out.append("APP_SECRET 太短，至少要 32 個字")
+    if auth_mode() == "passcode" and not ENV.get("APP_PASSCODE"):
+        out.append("還沒設定 APP_PASSCODE（登入用的通行碼）")
+    if not ENV.get("GEMINI_API_KEY"):
+        out.append("還沒設定 GEMINI_API_KEY")
+    if STORE.kind != "redis":
+        out.append("還沒接上 Upstash Redis（設定和自訂情境重新部署後會不見）")
+    return out
+
+
+def storage_info():
+    warning = STORE.warning
+    if not warning and not STORE.durable:
+        warning = "還沒接上雲端資料庫：設定、背景和自訂情境在重新部署後會不見"
+    return {"kind": STORE.kind, "durable": STORE.durable, "warning": warning}
+
+
+def status():
+    """不連任何外部服務（雲端每次輪詢都算錢）；只有本機用 Ollama 當主要大腦時才問 Ollama 好了沒。"""
+    main_id = main_brain()
+    chain = brain_chain("chat")
+    p = chain[0]
+    acct = cg_account()
+    gemini_ok = PROVIDERS["gemini"]["configured"]
+    live_on = live_enabled()
+    providers = []
+    for x in PROVIDERS.values():
+        if x["id"] == "ollama" and ON_CLOUD and not ENV.get("OLLAMA_BASE_URL"):
+            continue
+        configured = cg_selectable(acct) if x["id"] == "chatgpt" else x["configured"]
+        providers.append({"id": x["id"], "label": x["label"], "configured": bool(configured)})
+    info = {
+        "provider": main_id,
         "label": p["label"],
-        "providers": [{"id": x["id"], "label": x["label"], "configured": x["configured"]} for x in PROVIDERS.values()],
+        "providers": providers,
         "ready": False,
         "message": "",
-        "live": bool(p.get("live")),
+        "live": live_on and gemini_ok,
         # 雲端可以一邊讓客戶回話、一邊跑教練；本機只有一張顯卡，要排隊
         "coach_parallel": p["kind"] != "ollama",
+        "hosted": ON_CLOUD,
+        "active": p["id"],
+        "chain": [x["id"] for x in chain],
+        "live_enabled": live_on,
+        "live_available": gemini_ok,
+        "live_reason": "" if gemini_ok else (
+            "還沒設定 Gemini 金鑰：請到 Vercel 新增 GEMINI_API_KEY 後 Redeploy" if ON_CLOUD
+            else "還沒設定 Gemini 金鑰：請到「聲音設定」選 Gemini 貼上金鑰"),
+        "chatgpt": chatgpt_info(acct),
+        "storage": storage_info(),
+        "can_admin": is_admin(),
+        "auth": {"required": auth_required(), "name": getattr(CTX, "name", "") or "",
+                 "role": getattr(CTX, "role", "") or "local"},
+        "setup_problems": setup_problems(),
     }
+    note = ""
+    if main_id == "chatgpt" and p["id"] != "chatgpt":
+        note = f"{chatgpt_problem(acct) or 'ChatGPT 暫時不能用'}，{using('暫用', p)}"
+    elif p["id"] != main_id:
+        note = f"{PROVIDERS[main_id]['label']} 暫時不能用，{using('改用', p)}"
+    if p["id"] == "chatgpt":
+        info["ready"] = True
+        info["message"] = "使用 ChatGPT 方案"
+        return info
     if p["kind"] != "ollama":
         info["ready"] = p["configured"]
-        info["message"] = "雲端金鑰已設定" if p["configured"] else "尚未設定金鑰"
+        info["message"] = note or ("雲端金鑰已設定" if p["configured"] else "尚未設定金鑰")
+        return info
+    if ON_CLOUD or p["id"] != main_id:
+        # 雲端不探測；本機模型只是備援時不另外問
+        info["ready"] = p["configured"]
+        info["message"] = note or ("已設定 Ollama" if p["configured"] else "尚未設定 OLLAMA_BASE_URL")
         return info
     try:
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -1777,7 +2230,7 @@ def status():
         wanted = p["model"] if ":" in p["model"] else p["model"] + ":latest"
         if wanted in names or p["model"] in names:
             info["ready"] = True
-            info["message"] = "本機模型就緒"
+            info["message"] = note or "本機模型就緒"
         else:
             info["message"] = f"還沒有模型 {p['model']}（下載中或尚未下載）"
     except Exception:
@@ -1831,6 +2284,182 @@ def warm_local_backup():
         raise
 
 
+def warm_brains():
+    """先把本機模型載入顯卡：它是主要大腦，或是下一個會接手的備援。雲端不做（背景執行緒會被凍結）。"""
+    if ON_CLOUD:
+        return
+    if main_brain() == "ollama":
+        threading.Thread(target=_warm, args=(PROVIDERS["ollama"],), daemon=True).start()
+    elif ollama_next_backup():
+        warm_local_backup()
+
+
+# ---------------------------------------------------------------- 登入（雲端）
+
+# 沒登入也能用的網址：登入頁本身和它要的檔案
+OPEN_PATHS = {"/login", "/login.html", "/login.js", "/styles.css", "/api/session", "/api/login", "/api/logout"}
+# 本機程式把 ChatGPT 憑證送上雲端用的：不走通行碼，用 X-Sync-Key 驗證
+SYNC_PATHS = {"/api/chatgpt/sync/host", "/api/chatgpt/sync/import", "/api/chatgpt/sync/clear"}
+_RUNTIME_SECRET = secrets.token_urlsafe(32)  # 本機設了通行碼卻沒設 APP_SECRET：重開程式就要重新登入
+
+
+def auth_mode():
+    return (ENV.get("AUTH_MODE") or "passcode").strip().lower()
+
+
+def auth_required():
+    """本機預設不用登入；設了 APP_PASSCODE、或放在雲端（除非交給 Vercel 的保護），就要登入。"""
+    if ENV.get("APP_PASSCODE"):
+        return True
+    return ON_CLOUD and auth_mode() != "vercel"
+
+
+def sessions_on():
+    """要不要用登入 cookie：雲端一定要（AUTH_MODE=vercel 也要，每個瀏覽器才有自己的代號）；本機只有設了通行碼才要。"""
+    return ON_CLOUD or bool(ENV.get("APP_PASSCODE"))
+
+
+def app_secret():
+    secret = ENV.get("APP_SECRET") or ""
+    if secret or ON_CLOUD:
+        return secret
+    return _RUNTIME_SECRET
+
+
+def passcode_version():
+    # 改了通行碼（或管理者通行碼），舊的登入就失效
+    return websession.passcode_version(f"{ENV.get('APP_PASSCODE') or ''}\n{ENV.get('ADMIN_PASSCODE') or ''}")
+
+
+def auth_setup_problem():
+    """雲端少了必要的設定就整個關起來（不然任何人都能用你的 Gemini 金鑰）。"""
+    if not ON_CLOUD:
+        return ""
+    if not ENV.get("APP_SECRET"):
+        return "雲端還沒設定好：請到 Vercel → Settings → Environment Variables 新增 APP_SECRET 後 Redeploy"
+    if auth_mode() == "passcode" and not ENV.get("APP_PASSCODE"):
+        return "雲端還沒設定好：請到 Vercel → Settings → Environment Variables 新增 APP_PASSCODE 後 Redeploy"
+    return ""
+
+
+def is_admin():
+    """管理者：有設 ADMIN_PASSCODE 時要用它登入；沒設就是任何登入的人。本機不用登入時人人都是。"""
+    if not sessions_on():
+        return True
+    if ENV.get("ADMIN_PASSCODE"):
+        return getattr(CTX, "role", "") == "admin"
+    return bool(getattr(CTX, "uid", ""))
+
+
+def session_days():
+    try:
+        return max(1, min(400, int(ENV.get("SESSION_DAYS") or 180)))
+    except ValueError:
+        return 180
+
+
+def sync_enabled():
+    # 雲端、同步模式、有 CHATGPT_SYNC_KEY 才開 /api/chatgpt/sync/*（CHATGPT_MODE=off 時也關掉）
+    return CHATGPT_CFG.sync_enabled
+
+
+_host_warned = []
+
+
+def allowed_hosts():
+    """可以用來開這個網站的主機名稱。本機只有 127.0.0.1 和 localhost（擋 DNS rebinding）。
+    雲端是 Vercel 給的網址加上 ALLOWED_HOSTS；一個都沒有就不檢查（只警告一次）。"""
+    if not ON_CLOUD:
+        return {"127.0.0.1", "localhost"}
+    hosts = set()
+    for k in ("VERCEL_URL", "VERCEL_BRANCH_URL", "VERCEL_PROJECT_PRODUCTION_URL"):
+        if ENV.get(k):
+            hosts.add(_hostname(ENV[k]))
+    for h in (ENV.get("ALLOWED_HOSTS") or "").split(","):
+        if h.strip():
+            hosts.add(_hostname(h))
+    hosts.discard("")
+    if not hosts and not _host_warned:
+        _host_warned.append(1)
+        print("[安全] 雲端沒有可比對的網址（VERCEL_URL 或 ALLOWED_HOSTS），先不檢查 Host", file=sys.stderr)
+    return hosts
+
+
+def _hostname(value):
+    v = value.strip().lower()
+    if "://" in v:
+        v = urlparse(v).netloc
+    v = v.split("/", 1)[0]
+    if v.startswith("["):
+        return v.split("]", 1)[0] + "]"
+    return v.rsplit(":", 1)[0] if v.count(":") == 1 else v
+
+
+def host_allowed(host):
+    hosts = allowed_hosts()
+    return (ON_CLOUD and not hosts) or _hostname(host or "") in hosts
+
+
+def safe_return_to(value):
+    """登入完要回去的網址：只接受這個網站自己的網址，不能被拿去轉到別的網站。"""
+    try:
+        u = urlparse(str(value or ""))
+    except ValueError:
+        return ""
+    if u.scheme not in ("http", "https") or not u.netloc or u.username or u.password:
+        return ""
+    return f"{u.scheme}://{u.netloc}" if host_allowed(u.netloc) else ""
+
+
+# ---------------------------------------------------------------- ChatGPT 同步到雲端
+
+# 憑證怎麼傳、怎麼檢查都在 chatgpt_brain（本機 push_to_cloud、雲端 import_account）；這裡只管網址、密碼和路由
+_SYNC_KEY_RE = re.compile(r"^[\x21-\x7e]{16,256}$")  # 看得到的 ASCII 字元，不能有空白
+_REASON_RE = re.compile(r"^[a-z0-9_.]{1,40}$")
+SYNC_REASON_TEXT = {
+    "denied": "你在 ChatGPT 的頁面按了取消",
+    "no_plan": "這個帳號沒有允許使用 ChatGPT 方案",
+    "no_client_id": "ChatGPT 沒有回傳登入資料，請再試一次",
+    "bad_state": "登入逾時或已經用過，請重新按一次",
+    "expired": "登入逾時，請重新按一次",
+}
+
+
+def reason_code(value):
+    # 放進網址的原因代碼只留簡單的英數字
+    v = str(value or "").lower()
+    return v if _REASON_RE.match(v) else "error"
+
+
+def cloud_target():
+    """本機存好的雲端網址和同步密碼（.env 的 CLOUD_URL、CHATGPT_SYNC_KEY）。"""
+    return ENV.get("CLOUD_URL") or "", ENV.get("CHATGPT_SYNC_KEY") or ""
+
+
+def note_cloud_error(text):
+    try:
+        CHATGPT.cloud_sync_error(text)
+    except chatgpt_brain.BrainError as e:
+        log_once("sync-state", f"[ChatGPT] 記不住同步結果：{e.code}")
+
+
+def store_error_text():
+    if ON_CLOUD:
+        return "雲端資料庫暫時連不上，請稍後再試"
+    return "資料正在忙，請再試一次"
+
+
+# 這些錯誤代表要（重新）登入 ChatGPT
+NEEDS_LOGIN_CODES = ("not_signed_in", "needs_login", "no_plan_scope", "subscription_sharing_invalid_user",
+                     "chatpass_v2_scope_not_authorized")
+# 會改到整個網站設定的動作：有設 ADMIN_PASSCODE 時只有管理者能做
+ADMIN_ROUTES = {
+    "/api/provider", "/api/live/config", "/api/chatgpt/config", "/api/chatgpt/cloud",
+    "/api/editor/save", "/api/editor/delete", "/api/editor/draft",
+    "/api/tts/config", "/api/tts/key", "/api/tts/assign", "/api/tts/design",
+}
+
+
 # ---------------------------------------------------------------- HTTP
 
 
@@ -1840,17 +2469,36 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         sys.stderr.write("[%s] %s\n" % (time.strftime("%H:%M:%S"), fmt % args))
 
+    def log_request(self, code="-", size="-"):
+        # 登入回來的網址帶著一次性的授權碼，不能印到黑色視窗（或 Vercel 的紀錄）裡
+        parts = self.requestline.split(" ")
+        if len(parts) >= 2 and "?" in parts[1] and parts[1].split("?", 1)[0].startswith("/auth/"):
+            parts[1] = parts[1].split("?", 1)[0] + "?…"
+        self.log_message('"%s" %s %s', " ".join(parts), str(getattr(code, "value", code)), str(size))
+
     def do_GET(self):
         url = urlparse(self.path)
         path = url.path
-        if not self._local_host():
-            return self._json(403, {"error": "請用 http://127.0.0.1 開啟"})
+        if not self._begin(path):
+            return
+        try:
+            self._get(path, url)
+        except StoreError as e:
+            self.log_message("處理 %s 失敗：%r", path, e)
+            self._json(503, {"error": store_error_text()})
+        except Exception as e:
+            self.log_message("處理 %s 失敗：%r", path, e)
+            self._json(500, {"error": f"伺服器錯誤：{e}"})
+
+    def _get(self, path, url):
         if path == "/api/scenarios":
             return self._json(200, {"scenarios": public_scenarios()})
         if path == "/api/profile":
             return self._json(200, profile_payload())
         if path == "/api/status":
             return self._json(200, status())
+        if path == "/api/session":
+            return self._json(200, self._session_info())
         if path == "/api/tts/status":
             return self._json(200, tts_status())
         if path == "/api/tts/voices":
@@ -1859,10 +2507,20 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, tts_voices(avatar))
             except tts.TTSError as e:
                 return self._json(502, {"error": str(e)})
+        if path == "/api/chatgpt/models":
+            return self._chatgpt_models()
+        if path == "/auth/chatgpt/start":
+            return self._chatgpt_start(url)
+        if path == CHATGPT_CFG.redirect_path:
+            return self._chatgpt_callback(url)
+        if path == "/login":
+            return self._static("/login.html")
         return self._static(path)
 
     def do_POST(self):
         path = urlparse(self.path).path
+        if not self._begin(path):
+            return
         routes = {
             "/api/chat": self._chat,
             "/api/observe": self._observe,
@@ -1875,18 +2533,30 @@ class Handler(BaseHTTPRequestHandler):
             "/api/tts/assign": self._tts_assign,
             "/api/tts/design": self._tts_design,
             "/api/live/token": self._live_token,
+            "/api/live/config": self._live_config,
             "/api/profile": self._profile,
             "/api/editor/list": self._editor_list,
             "/api/editor/get": self._editor_get,
             "/api/editor/save": self._editor_save,
             "/api/editor/delete": self._editor_delete,
             "/api/editor/draft": self._editor_draft,
+            "/api/login": self._login,
+            "/api/logout": self._logout,
+            "/api/chatgpt/logout": self._chatgpt_logout,
+            "/api/chatgpt/config": self._chatgpt_config,
+            "/api/chatgpt/cloud": self._chatgpt_cloud,
+            "/api/chatgpt/sync/host": self._sync_host,
+            "/api/chatgpt/sync/import": self._sync_import,
+            "/api/chatgpt/sync/clear": self._sync_clear,
         }
         handler = routes.get(path)
         if handler is None:
             return self._json(404, {"error": "not found"})
         if not self._same_origin():
-            return self._json(403, {"error": "只接受從這台電腦的對練網頁送出的請求"})
+            where = "只接受從對練網頁送出的請求" if ON_CLOUD else "只接受從這台電腦的對練網頁送出的請求"
+            return self._json(403, {"error": where})
+        if path in ADMIN_ROUTES and not self._require_admin():
+            return
         try:
             length = int(self.headers.get("Content-Length") or 0)
             if length > MAX_BODY:
@@ -1898,19 +2568,40 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(400, {"error": "資料格式錯誤"})
         try:
             handler(body)
+        except StoreError as e:
+            self.log_message("處理 %s 失敗：%r", path, e)
+            self._json(503, {"error": store_error_text()})
         except Exception as e:
             self.log_message("處理 %s 失敗：%r", path, e)
             self._json(500, {"error": f"伺服器錯誤：{e}"})
 
     # ---- 安全
 
-    def _local_host(self):
-        # 擋 DNS rebinding：網址必須是 127.0.0.1 或 localhost
-        return self.headers.get("Host", "").rsplit(":", 1)[0] in ("127.0.0.1", "localhost")
+    def _req_host(self):
+        # 雲端前面有 Vercel 的代理，真正的網址在 X-Forwarded-Host；本機絕不相信這個標頭
+        if ON_CLOUD:
+            fwd = (self.headers.get("X-Forwarded-Host") or "").split(",")[0].strip()
+            if fwd:
+                return fwd
+        return self.headers.get("Host", "")
+
+    def _host_ok(self):
+        # 擋 DNS rebinding：本機的網址必須是 127.0.0.1 或 localhost；雲端要在允許清單裡
+        return host_allowed(self._req_host())
+
+    _local_host = _host_ok  # 舊名字（app.py 直接用 server:Handler 時也一樣）
+
+    def _origin(self):
+        if ON_CLOUD:
+            proto = (self.headers.get("X-Forwarded-Proto") or "https").split(",")[0].strip().lower()
+            scheme = proto if proto in ("http", "https") else "https"
+        else:
+            scheme = "http"
+        return f"{scheme}://{self._req_host()}"
 
     def _same_origin(self):
         """別的網站就算叫瀏覽器偷偷 POST 到這裡，也改不了金鑰、設定或情境。"""
-        if not self._local_host():
+        if not self._host_ok():
             return False
         # 只收 JSON：別的網站用表單或 text/plain 送的「簡單請求」不用預檢，要在這裡擋掉；
         # 這裡沒有 do_OPTIONS，跨站送 application/json 的預檢一定失敗
@@ -1920,7 +2611,372 @@ class Handler(BaseHTTPRequestHandler):
         if self.headers.get("Sec-Fetch-Site") not in (None, "same-origin"):
             return False
         origin = self.headers.get("Origin")
-        return origin is None or urlparse(origin).netloc == self.headers.get("Host", "")
+        return origin is None or urlparse(origin).netloc.lower() == self._req_host().lower()
+
+    def _client_ip(self):
+        return str((self.client_address or ("",))[0] or "unknown")
+
+    def _begin(self, path):
+        """每個請求先跑這裡：檢查網址、讀登入 cookie、記下這次的使用者；回傳 False 表示已經回應了。"""
+        CTX.uid, CTX.name, CTX.role = "local", "", "local"
+        self._extra = []
+        if not self._host_ok():
+            msg = "這個網址不在允許清單裡（ALLOWED_HOSTS）" if ON_CLOUD else "請用 http://127.0.0.1 開啟"
+            self._json(403, {"error": msg})
+            return False
+        if not sessions_on():
+            return True  # 本機：跟以前一樣不用登入
+        CTX.uid, CTX.role = "", ""
+        if path in SYNC_PATHS:
+            return True  # 本機程式直接呼叫，自己用 X-Sync-Key 驗證
+        problem = auth_setup_problem()
+        if problem:
+            if path in OPEN_PATHS:
+                return True
+            if path.startswith("/api/"):
+                self._json(503, {"error": problem, "setup": True})
+            else:
+                self._redirect("/login")
+            return False
+        sess = self._read_session()
+        if sess is None and not auth_required():
+            sess = self._new_session(websession.new_uid(), "", "user")  # 交給 Vercel 保護：每個瀏覽器給一個匿名代號
+        if sess:
+            CTX.uid, CTX.name, CTX.role = sess["uid"], sess.get("name") or "", sess.get("role") or "user"
+            return True
+        if path in OPEN_PATHS:
+            return True
+        if path.startswith("/api/"):
+            self._json(401, {"error": "請先登入", "login": True})
+        else:
+            self._redirect("/login")
+        return False
+
+    def _read_session(self, check_exp=True):
+        secret = app_secret()
+        token = websession.parse_cookies(self.headers.get("Cookie") or "").get(websession.COOKIE)
+        if not token or not secret:
+            return None
+        data = websession.verify(token, secret, check_exp=check_exp)
+        if not isinstance(data, dict) or not data.get("uid") or data.get("role") not in ("user", "admin"):
+            return None
+        if check_exp and data.get("pv") != passcode_version():
+            return None
+        return data
+
+    def _new_session(self, uid, name, role):
+        now = int(time.time())
+        sess = {"uid": uid, "name": name, "role": role, "pv": passcode_version(), "iat": now,
+                "exp": now + session_days() * 86400}
+        token = websession.sign(sess, app_secret())
+        self._extra = [h for h in self._extra if h[0] != "Set-Cookie"]  # 同一個回應只發一張
+        self._extra.append(("Set-Cookie", websession.set_cookie(token, self._secure(), session_days() * 86400)))
+        return sess
+
+    def _secure(self):
+        return self._origin().startswith("https://")
+
+    def _require_admin(self):
+        if is_admin():
+            return True
+        self._json(403, {"error": "需要管理者通行碼", "admin": True})
+        return False
+
+    def _session_info(self):
+        logged_in = not auth_required() or bool(getattr(CTX, "uid", ""))
+        # 沒登入的人只看得到登入相關的設定問題
+        problems = setup_problems() if logged_in or auth_setup_problem() else []
+        return {
+            "auth_required": auth_required(),
+            "logged_in": logged_in,
+            "name": getattr(CTX, "name", "") or "",
+            "role": (getattr(CTX, "role", "") or "") if sessions_on() else "local",
+            "hosted": ON_CLOUD,
+            "setup_problems": problems,
+        }
+
+    # ---- 登入（雲端通行碼）
+
+    def _login(self, body):
+        if not sessions_on():
+            return self._json(200, {"ok": True, "name": "", "role": "local"})
+        problem = auth_setup_problem()
+        if problem:
+            return self._json(503, {"error": problem, "setup": True})
+        try:
+            tries = STORE.eph_incr("login:" + self._client_ip(), 600)
+        except StoreError:
+            tries = 0
+        if tries > 10:
+            return self._json(429, {"error": "試太多次了，請 10 分鐘後再試"})
+        given = str(body.get("passcode") or "")
+        role = ""
+        if ENV.get("ADMIN_PASSCODE") and websession.passcode_ok(given, ENV["ADMIN_PASSCODE"]):
+            role = "admin"
+        elif ENV.get("APP_PASSCODE") and websession.passcode_ok(given, ENV["APP_PASSCODE"]):
+            role = "user"
+        if not role:
+            self.log_message("通行碼不對（%s）", self._client_ip())
+            return self._json(401, {"error": "通行碼不對"})
+        try:
+            name = _clean(body.get("name"))[:20]
+        except ValueError:
+            name = ""
+        # 同一個瀏覽器重新登入沿用原本的代號：「我的背景」才不會不見
+        old = self._read_session(check_exp=False)
+        uid = old["uid"] if old else (getattr(CTX, "uid", "") or websession.new_uid())
+        self._new_session(uid, name, role)
+        self._json(200, {"ok": True, "name": name, "role": role})
+
+    def _logout(self, body):
+        self._extra.append(("Set-Cookie", websession.clear_cookie(self._secure())))
+        self._json(200, {"ok": True})
+
+    # ---- ChatGPT 訂閱
+
+    def _chatgpt_start(self, url):
+        target = (parse_qs(url.query).get("target") or ["local"])[0]
+        cloud = target == "cloud"
+
+        def fail(reason):
+            return self._redirect(f"/?chatgpt={'sync_failed' if cloud else 'error'}&reason={reason_code(reason)}")
+
+        mode = cg_mode()
+        if cloud and ON_CLOUD:
+            return fail("local_only")
+        if cloud and not is_admin():
+            return fail("admin")  # 同步會改到雲端的設定，跟「儲存並測試」一樣要管理者
+        if mode not in ("local", "hosted") or CHATGPT_CFG.blocked_reason:
+            return fail("synced" if mode == "synced" else "blocked")
+        server = getattr(self, "server", None)
+        port = getattr(server, "server_port", None) if server is not None else None
+        if mode == "local" and not port:
+            return fail("no_server")  # 本機登入要用 127.0.0.1 的回呼網址，只有 start.bat 開的伺服器才有
+        return_to = safe_return_to(self._origin())
+        if not return_to:
+            return fail("host")
+        try:
+            redirect_uri = CHATGPT.redirect_uri(port)
+            if cloud:
+                cloud_url, key = cloud_target()
+                if not cloud_url or not key:
+                    return fail("cloud_not_set")
+                # 用雲端自己的 host id 登入：雲端拿到的是它自己的一份授權，跟這台電腦的互不影響
+                host = CHATGPT.cloud_host_id(cloud_url, key)
+                auth_url = CHATGPT.begin_login(cg_uid(), redirect_uri, return_to, host_id=host, target="cloud")
+            else:
+                auth_url = CHATGPT.begin_login(cg_uid(), redirect_uri, return_to)
+        except chatgpt_brain.BrainError as e:
+            if cloud:
+                note_cloud_error(str(e))
+            return fail(e.code or "error")
+        self._redirect(auth_url)
+
+    def _chatgpt_callback(self, url):
+        query = {k: v[0] for k, v in parse_qs(url.query).items() if v}
+        res = self._finish_login(cg_uid(), query)
+        if res.get("target") == "cloud":
+            return self._cloud_callback(res)
+        back = safe_return_to(res.get("return_to"))
+        if res.get("ok") and res.get("plan_usage"):
+            # 登入成功就是選了 ChatGPT；先把即時通話的開關寫死，通話方式才不會跟著變
+            if is_admin():
+                set_setting("LIVE_ENABLED", "1" if live_enabled() else "0")
+                set_setting("LLM_PROVIDER", "chatgpt")
+            result = "chatgpt=ok"
+        elif res.get("ok"):
+            result = "chatgpt=no_plan"
+        elif res.get("reason") == "denied":
+            result = "chatgpt=denied"
+        else:
+            result = "chatgpt=error&reason=" + reason_code(res.get("reason"))
+        self._redirect(f"{back}/?{result}")
+
+    def _cloud_callback(self, res):
+        """登入並同步到雲端：在這台電腦換到憑證，馬上用 HTTPS 送給雲端，這台電腦不留那份 token。"""
+        back = safe_return_to(res.get("return_to"))
+        if not res.get("ok"):
+            reason = reason_code(res.get("reason"))
+            try:
+                CHATGPT.cloud_sync_done(False, error=SYNC_REASON_TEXT.get(reason) or f"同步沒有完成（{reason}）")
+            except chatgpt_brain.BrainError:
+                pass
+            return self._redirect(f"{back}/?chatgpt=sync_failed&reason={reason}")
+        try:
+            # 沒有方案權限、雲端拒收都會在這裡丟錯；不論成功失敗，這台電腦都不留那份 token
+            CHATGPT.push_to_cloud(*cloud_target())
+        except chatgpt_brain.BrainError as e:
+            self.log_message("同步到雲端沒有完成：%s", e.code or "error")
+            return self._redirect(f"{back}/?chatgpt=sync_failed&reason={reason_code(e.code)}")
+        self.log_message("ChatGPT 憑證已同步到雲端")
+        self._redirect(f"{back}/?chatgpt=synced")
+
+    def _finish_login(self, uid, query):
+        """換 token 出任何錯都回到網頁顯示原因，不要停在一頁 JSON。"""
+        try:
+            return CHATGPT.finish_login(uid, query) or {}
+        except chatgpt_brain.BrainError as e:
+            return {"ok": False, "reason": e.code or "error"}
+        except Exception as e:
+            self.log_message("ChatGPT 登入沒有完成：%s", type(e).__name__)
+            return {"ok": False, "reason": "error"}
+
+    def _chatgpt_logout(self, body):
+        if cg_mode() == "synced":
+            # 雲端只有一份擁有者的憑證：清掉它要管理者
+            if not self._require_admin():
+                return
+            try:
+                remote = CHATGPT.clear_owner()
+            except chatgpt_brain.BrainError as e:
+                return self._json(503, {"error": str(e)})
+            self.log_message("已清除雲端的 ChatGPT 憑證")
+            return self._json(200, {"ok": True, "remote_revoked": bool(remote), "status": status()})
+        try:
+            remote = CHATGPT.logout(cg_uid())
+        except chatgpt_brain.BrainError as e:
+            return self._json(503, {"error": str(e)})
+        self._json(200, {"ok": True, "remote_revoked": bool(remote), "status": status()})
+
+    def _chatgpt_models(self):
+        try:
+            rows = CHATGPT.list_models(cg_uid()) or []
+        except chatgpt_brain.BrainError as e:
+            if getattr(e, "code", "") in NEEDS_LOGIN_CODES:
+                return self._json(409, {"error": str(e) or "請先用 ChatGPT 登入", "needs_chatgpt_login": True})
+            return self._json(502, {"error": str(e) or "拿不到 ChatGPT 的模型清單"})
+        models = [{"slug": r.get("slug"), "display_name": r.get("display_name") or r.get("slug")}
+                  for r in rows if isinstance(r, dict) and r.get("slug")]
+        self._json(200, {"models": models, "model": cg_model_setting("CHATGPT_MODEL"),
+                         "coach_model": cg_model_setting("CHATGPT_COACH_MODEL")})
+
+    def _chatgpt_config(self, body):
+        updates = {}
+        for field, key in (("model", "CHATGPT_MODEL"), ("coach_model", "CHATGPT_COACH_MODEL")):
+            if field in body:
+                value = "" if body[field] is None else body[field]
+                if not isinstance(value, str) or len(value) > 100:
+                    return self._json(400, {"error": "資料格式錯誤"})
+                updates[key] = value.strip()
+        if any(updates.values()):
+            try:
+                slugs = {r.get("slug") for r in CHATGPT.list_models(cg_uid()) or [] if isinstance(r, dict)}
+            except chatgpt_brain.BrainError as e:
+                if getattr(e, "code", "") in NEEDS_LOGIN_CODES:
+                    return self._json(409, {"error": str(e) or "請先用 ChatGPT 登入", "needs_chatgpt_login": True})
+                return self._json(502, {"error": str(e) or "拿不到 ChatGPT 的模型清單"})
+            if any(v and v not in slugs for v in updates.values()):
+                return self._json(400, {"error": "沒有這個模型"})
+        for key, value in updates.items():
+            set_setting(key, value or "auto")  # 自動 = 用清單的第一個
+        self._json(200, status())
+
+    def _chatgpt_cloud(self, body):
+        """本機設定雲端網址和同步密碼：先實際連一次雲端，對了才存進 .env。"""
+        if ON_CLOUD:
+            return self._json(404, {"error": "not found"})
+        raw_url, key = body.get("cloud_url"), body.get("sync_key")
+        if not isinstance(raw_url, (str, type(None))) or not isinstance(key, (str, type(None))):
+            return self._json(400, {"error": "資料格式錯誤"})
+        raw_url, key = (raw_url or "").strip(), (key or "").strip()
+        if not raw_url and not key:
+            set_env_value("CLOUD_URL", "")
+            set_env_value("CHATGPT_SYNC_KEY", "")
+            reload_env()
+            return self._json(200, {"ok": True, "host_id": "", "url": ""})
+        if raw_url and "://" not in raw_url:
+            raw_url = "https://" + raw_url  # 只貼 xxx.vercel.app 也可以
+        try:
+            url = chatgpt_brain.normalize_cloud_url(raw_url)
+        except ValueError as e:
+            return self._json(400, {"error": str(e), "reason": "bad_cloud_url"})
+        key = key or ENV.get("CHATGPT_SYNC_KEY") or ""  # 留空 = 沿用已經存的同步密碼
+        if not _SYNC_KEY_RE.match(key):
+            return self._json(400, {"error": "同步密碼至少要 16 個字（英數字或符號，不能有空白）", "reason": "sync_key_format"})
+        try:
+            host = CHATGPT.cloud_host_id(url, key)
+        except chatgpt_brain.BrainError as e:
+            code = 502 if e.code in ("cloud_unreachable", "cloud") or e.status >= 500 else 400
+            return self._json(code, {"error": str(e), "reason": e.code})
+        set_env_value("CLOUD_URL", url)
+        set_env_value("CHATGPT_SYNC_KEY", key)
+        reload_env()
+        note_cloud_error("")
+        self.log_message("雲端網址已設定：%s", url)
+        self._json(200, {"ok": True, "host_id": host, "url": url})
+
+    # ---- 雲端：接收本機同步過來的 ChatGPT 憑證（伺服器對伺服器，不經過瀏覽器）
+
+    def _sync_gate(self):
+        if not sync_enabled():
+            self._json(404, {"error": "not found"})
+            return False
+        # 只算猜錯的次數：10 分鐘內錯 10 次就先擋掉（正常同步不會被自己擋住）
+        fail_key = "syncfail:" + self._client_ip()
+        try:
+            fails = int(STORE.eph_get(fail_key) or 0)
+        except (StoreError, TypeError, ValueError):
+            fails = 0
+        if fails >= 10:
+            self._json(429, {"error": "試太多次了，請 10 分鐘後再試"})
+            return False
+        given = (self.headers.get("X-Sync-Key") or "").encode("utf-8", "replace")
+        want = (ENV.get("CHATGPT_SYNC_KEY") or "").encode("utf-8")
+        if not hmac.compare_digest(hashlib.sha256(given).digest(), hashlib.sha256(want).digest()):
+            try:
+                STORE.eph_incr(fail_key, 600)
+            except StoreError:
+                pass
+            self.log_message("同步密碼不對（%s）", self._client_ip())
+            self._json(401, {"error": "同步密碼不對", "sync": True})
+            return False
+        return True
+
+    def _sync_host(self, body):
+        if not self._sync_gate():
+            return
+        try:
+            host = CHATGPT.host_id()
+        except chatgpt_brain.BrainError as e:
+            return self._json(503, {"error": str(e), "reason": e.code or "store"})
+        self._json(200, {"host_id": host, "app": chatgpt_brain.APP_ID})
+
+    def _sync_import(self, body):
+        if not self._sync_gate():
+            return
+        # chatgpt_brain 做完整檢查（方案權限、主機代號、ID token）再加密存成 chatgpt-owner；不記任何 token
+        out = CHATGPT.import_account(body)
+        if not out.get("ok"):
+            code = 503 if out.get("reason") == "store" else 400
+            return self._json(code, {"error": out.get("error") or "同步的憑證不對", "reason": out.get("reason") or ""})
+        # 同步成功就是選了 ChatGPT（跟本機登入一樣）；即時通話的開關先寫死，不會跟著變
+        set_setting("LIVE_ENABLED", "1" if live_enabled() else "0")
+        set_setting("LLM_PROVIDER", "chatgpt")
+        self.log_message("已收到同步的 ChatGPT 憑證")
+        reply = {"ok": True, "email": out.get("email") or "", "expires_at": out.get("expires_at")}
+        if not STORE.durable:
+            reply["warning"] = "雲端還沒接上 Upstash Redis：重新部署後要再同步一次"
+        self._json(200, reply)
+
+    def _sync_clear(self, body):
+        if not self._sync_gate():
+            return
+        try:
+            CHATGPT.clear_owner()
+        except chatgpt_brain.BrainError as e:
+            return self._json(503, {"error": str(e)})
+        self.log_message("已清除雲端的 ChatGPT 憑證")
+        self._json(200, {"ok": True})
+
+    def _live_config(self, body):
+        enabled = body.get("enabled")
+        if not isinstance(enabled, bool):
+            return self._json(400, {"error": "資料格式錯誤"})
+        if enabled and not PROVIDERS["gemini"]["configured"]:
+            where = "請到 Vercel 新增 GEMINI_API_KEY 後 Redeploy" if ON_CLOUD else "請先到「聲音設定」選 Gemini 貼上金鑰"
+            return self._json(400, {"error": f"還沒設定 Gemini 金鑰，{where}"})
+        set_setting("LIVE_ENABLED", "1" if enabled else "0")
+        self._json(200, status())
 
     # ---- API
 
@@ -1937,26 +2993,47 @@ class Handler(BaseHTTPRequestHandler):
         msgs = normalize_messages(body.get("messages"))
         if not msgs or msgs[-1]["role"] != "rep":
             return self._json(400, {"error": "最後一句必須是業務說的話"})
-        provider = current_provider()
-        if provider["kind"] == "ollama":  # 只有本機要讓出顯卡；雲端的教練照跑，不被下一輪砍掉
-            cancel_observer()
+        chain = brain_chain("chat")
+        want = main_brain()
+        prompt = chat_messages(sc, msgs)
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
         self.send_header("Cache-Control", "no-cache")
+        self._send_common()
         self.end_headers()
-        gen = stream_chat(provider, chat_messages(sc, msgs), temperature=0.8, max_tokens=220)
-        try:
-            for piece in gen:
-                self._sse({"delta": piece})
-            self._sse({"done": True})
-        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
-            pass  # 業務插話時瀏覽器會中斷連線，關掉上游就好
-        except LLMError as e:
-            self._safe_sse({"error": str(e)})
-        except Exception as e:
-            self._safe_sse({"error": f"伺服器錯誤：{e}"})
-        finally:
-            gen.close()
+        first_error = None
+        for i, provider in enumerate(chain):
+            last = i == len(chain) - 1
+            if provider["kind"] == "ollama":  # 只有本機要讓出顯卡；雲端的教練照跑，不被下一輪砍掉
+                cancel_observer()
+            # 後面還有備援時只等 8 秒：客戶太久沒回話比換一個大腦更不自然
+            gen = stream_chat(provider, prompt, temperature=0.8, max_tokens=220, timeout=300 if last else 8)
+            sent = False
+            try:
+                for piece in gen:
+                    # 不是選的大腦在回答（換了備援，或 ChatGPT 冷卻中直接由備援接手）：先告訴網頁
+                    if not sent and provider["id"] != want:
+                        self._sse({"brain": provider["id"], "label": provider["label"], "fallback": True})
+                    sent = True
+                    self._sse({"delta": piece})
+                self._sse({"done": True, "brain": provider["id"]})
+                return
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                return  # 業務插話時瀏覽器會中斷連線，關掉上游就好
+            except LLMError as e:
+                if first_error is None:
+                    first_error = e
+                if e.fallback and not e.started and not sent and not last:
+                    self.log_message("%s 沒回應，改用 %s：%s", provider["label"], chain[i + 1]["label"], str(e)[:80])
+                    continue
+                # 備援也沒開始講就失敗：回報主要大腦的原因
+                self._safe_sse({"error": str(e if sent or e.started else first_error)})
+                return
+            except Exception as e:
+                self._safe_sse({"error": f"伺服器錯誤：{e}"})
+                return
+            finally:
+                gen.close()
 
     def _observe(self, body):
         sc = self._scenario(body)
@@ -1984,39 +3061,45 @@ class Handler(BaseHTTPRequestHandler):
         done = body.get("done") if isinstance(body.get("done"), list) else []
         done = {str(i) for i in done}
         pending = [i for i in ids if i not in done]
-        p = current_provider()
-        local = p["kind"] == "ollama"
-        coach = coach_provider(p)
+        chain = brain_chain("coach")
+        local = chain[0]["kind"] == "ollama"
         # 本機只留最新一次（保護顯卡）；雲端每句各跑各的，不互相取消
         cancel = begin_observer() if local else None
         prompt = observer_messages(sc, msgs, current, pending, focus)
         schema = observer_schema(pending)
-        # 雲端塞車時改用已經暖好的本機模型，所以雲端只等 4 秒；沒有本機可用就等到 9 秒
-        backup = not local and local_warm()
-        if not local and not backup and p.get("live"):
+        # 有備援時主要的大腦只等 4 秒，接著換備援；沒有備援就等到 9 秒
+        backup = len(chain) > 1
+        if not local and all(p["id"] != "ollama" for p in chain) and ollama_next_backup():
             warm_local_backup()  # 模型被卸載或 Ollama 重開過：背景再暖一次，之後幾句就有備援
         t0 = time.monotonic()
+        coach = coach_provider(chain[0])
         try:
-            try:
-                # 不用 complete_json_backup：它會退回還沒暖機的本機模型，要十幾秒
-                raw = complete_json(
-                    coach, prompt, schema, 0.1, cancel,
-                    max_tokens=512 if local else 600, timeout=20 if local else 4 if backup else 6,
-                    deadline=t0 + (25 if local else 4.5 if backup else 9),
-                )
-            except LLMError as e:
-                if not backup:
-                    raise
-                self.log_message("雲端教練沒回應（%.1f 秒），改用本機：%s", time.monotonic() - t0, str(e)[:60])
-                coach = PROVIDERS["ollama"]
-                try:
+            for i, p in enumerate(chain):
+                coach = coach_provider(p)
+                if i == 0:
+                    opts = dict(max_tokens=512 if local else 600, timeout=20 if local else 4 if backup else 6,
+                                deadline=t0 + (25 if local else 4.5 if backup else 9))
+                elif p["kind"] == "ollama":
                     # 總共不超過 11.5 秒：前端雲端教練等 12 秒就放棄
-                    raw = complete_json(coach, prompt, schema, 0.1, None, max_tokens=512, timeout=8,
-                                        deadline=min(time.monotonic() + 8, t0 + 11.5))
-                except LLMError:
-                    mark_local_warm(False)  # 本機也不行（關掉了或被卸載），下一句不再縮短雲端的等待
-                    raise
-                mark_local_warm(True)
+                    opts = dict(max_tokens=512, timeout=8, deadline=min(time.monotonic() + 8, t0 + 11.5))
+                else:
+                    opts = dict(max_tokens=600, timeout=6, deadline=min(time.monotonic() + 7, t0 + 11.5))
+                try:
+                    # 不用 run_chain：本機模型只在暖好時才當備援（冷啟動要十幾秒）
+                    raw = complete_json(coach, prompt, schema, 0.1, cancel if i == 0 else None, **opts)
+                except LLMError as e:
+                    if i > 0 and p["kind"] == "ollama":
+                        mark_local_warm(False)  # 本機也不行（關掉了或被卸載），下一句不再縮短雲端的等待
+                    # 教練是盡力而為：主要的大腦出任何錯都先換備援（跟以前一樣）
+                    nxt = chain[i + 1] if i + 1 < len(chain) else None
+                    if nxt is None or t0 + 11.5 - time.monotonic() < 1.5:
+                        raise
+                    self.log_message("%s 教練沒回應（%.1f 秒），改用 %s：%s", p["label"], time.monotonic() - t0,
+                                     nxt["label"], str(e)[:60])
+                    continue
+                if i > 0 and p["kind"] == "ollama":
+                    mark_local_warm(True)
+                break
         except Cancelled:
             return self._json(409, {"error": "cancelled", "skipped": True, "turn": turn})
         except LLMError as e:
@@ -2024,7 +3107,7 @@ class Handler(BaseHTTPRequestHandler):
             code = 504 if ("逾時" in str(e) or "沒有回應" in str(e)) else 502
             return self._json(code, {"error": str(e), "skipped": True, "turn": turn})
         ms = int((time.monotonic() - t0) * 1000)
-        self.log_message("教練 %.1f 秒（%s）", ms / 1000, coach["model"])
+        self.log_message("教練 %.1f 秒（%s）", ms / 1000, coach["model"] or coach["label"])  # ChatGPT 自動選模型時 model 是空的
         if not isinstance(raw, dict):
             raw = {}
         raw_checklist = raw.get("checklist") if isinstance(raw.get("checklist"), dict) else {}
@@ -2052,6 +3135,7 @@ class Handler(BaseHTTPRequestHandler):
             "tip": str(raw.get("tip", "")).strip()[:40],
             "turn": turn,
             "model": coach["model"],
+            "brain": coach["id"],
             "ms": ms,
             "skipped": False,
         })
@@ -2064,29 +3148,38 @@ class Handler(BaseHTTPRequestHandler):
         if not any(m["role"] == "rep" for m in msgs):
             return self._json(400, {"error": "還沒有業務的發言，無法評分"})
         cancel_observer()
-        provider = current_provider()
+        chain = brain_chain("eval")
+        prompt = evaluation_messages(sc, msgs)
         try:
-            raw, provider = complete_json_backup(provider, evaluation_messages(sc, msgs), EVAL_SCHEMA, 0.2)
+            raw, provider = run_chain(chain, lambda p, last: complete_json(
+                p, prompt, EVAL_SCHEMA, 0.2, timeout=json_timeout(p, last)))
         except LLMError as e:
             return self._json(502, {"error": str(e)})
-        self._json(200, finalize_evaluation(raw, msgs, body.get("client_flags"), provider))
+        used = labeled(provider)
+        report = finalize_evaluation(raw, msgs, body.get("client_flags"), used)
+        report.update(brain=provider["id"], fallback=is_backup(provider))
+        self._json(200, report)
 
     def _set_provider(self, body):
-        p = PROVIDERS.get(body.get("provider"))
+        pid = body.get("provider")
+        p = PROVIDERS.get(pid) if isinstance(pid, str) else None
         if p is None:
             return self._json(404, {"error": "沒有這個選項"})
-        if not p["configured"]:
-            where = "請先到「聲音設定」選 Gemini 貼上金鑰" if p["id"] == "gemini" else "請編輯 .env 後重新啟動"
-            return self._json(400, {"error": f"這個選項還沒設定金鑰，{where}"})
-        STATE["provider"] = p["id"]
-        set_env_value("LLM_PROVIDER", p["id"])  # 記住選擇，重開程式後還是這個
-        if p.get("live"):
-            warm_local_backup()
+        problem = brain_problem(pid)
+        if problem:
+            return self._json(400, {"error": problem})
+        # 先把即時通話的開關寫死，再換大腦：通話方式不會因為換大腦而跟著變
+        set_setting("LIVE_ENABLED", "1" if live_enabled() else "0")
+        set_setting("LLM_PROVIDER", pid)  # 記住選擇，重開程式後還是這個
+        warm_brains()
         self._json(200, status())
 
     def _live_token(self, body):
         if not PROVIDERS["gemini"]["configured"]:
-            return self._json(400, {"error": "還沒設定 Gemini 金鑰，請到「聲音設定」選 Gemini 貼上金鑰"})
+            where = "請到 Vercel 新增 GEMINI_API_KEY 後 Redeploy" if ON_CLOUD else "請到「聲音設定」選 Gemini 貼上金鑰"
+            return self._json(400, {"error": f"還沒設定 Gemini 金鑰，{where}"})
+        if not live_enabled():
+            return self._json(409, {"error": "即時通話已關閉，請到「AI 大腦」打開"})
         sc = self._scenario(body)
         if sc is None:
             return
@@ -2099,11 +3192,7 @@ class Handler(BaseHTTPRequestHandler):
                          "voice": live_voice(sc["customer"])})
 
     def _warmup(self, body):
-        p = current_provider()
-        if p["kind"] == "ollama":
-            threading.Thread(target=_warm, args=(p,), daemon=True).start()
-        elif p.get("live"):
-            warm_local_backup()
+        warm_brains()  # 雲端什麼都不做
         self._json(200, {"ok": True})
 
     # ---- 我的背景
@@ -2112,9 +3201,7 @@ class Handler(BaseHTTPRequestHandler):
         if ENV.get("PROFILE_LOCKED") == "1":
             return self._json(403, {"error": "考核期間不能修改背景設定"})
         if body.get("reset"):
-            with _profile_lock:
-                PROFILE_FILE.unlink(missing_ok=True)
-                _profile_cache.update(mtime=None, data=None, saved=False)
+            reset_profile()
             return self._json(200, profile_payload())
         try:
             p = validate_profile(body.get("profile"))
@@ -2147,7 +3234,7 @@ class Handler(BaseHTTPRequestHandler):
     def _editor_save(self, body):
         sid = str(body.get("id") or "").strip()
         copy_from = str(body.get("copy_from") or "").strip()
-        with _scenario_lock:
+        with STORE.lock("scenarios"):
             sources = scenario_sources()
             if sid and (sid not in sources or not _ID_RE.match(sid)):
                 return self._json(404, {"error": "找不到這個情境，可能已經被刪除"})
@@ -2161,45 +3248,31 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(400, {"error": str(e), "field": e.field})
             if not sid:  # 新增或複製：id 和檔名都由伺服器決定，不用使用者給的字
                 sid = new_scenario_id(sources)
-            custom = CUSTOM_DIR.resolve()
             old = sources[sid][1] if sid in sources else None
-            # 內建檔永遠不改寫：改內建的情境會另存一份同 id 的檔案蓋過去（之後可以還原預設）
-            path = old if old is not None and old.resolve().parent == custom else CUSTOM_DIR / f"{sid}.json"
-            if path.resolve().parent != custom:
-                return self._json(400, {"error": "情境檔的位置不對"})
+            # 內建檔永遠不改寫：改內建的情境會另存一份同 id 的自訂情境蓋過去（之後可以還原預設）
+            keep = old if old is not None and STORE.is_custom_ref(old) else None
             sc["id"] = sid
-            atomic_write_text(path, json.dumps(sc, ensure_ascii=False, indent=2) + "\n")
-        self.log_message("情境已儲存：%s（%s）", sid, path.name)
+            try:
+                saved = STORE.save_custom(sid, json.dumps(sc, ensure_ascii=False, indent=2) + "\n", keep)
+            except ValueError:
+                return self._json(400, {"error": "情境檔的位置不對"})
+        self.log_message("情境已儲存：%s（%s）", sid, getattr(saved, "name", saved))
         self._json(200, {"ok": True, "id": sid, "warnings": scenario_warnings(sc)})
 
     def _editor_delete(self, body):
         sid = str(body.get("id") or "")
-        with _scenario_lock:
+        with STORE.lock("scenarios"):
             src = scenario_sources().get(sid)
             if src is None:
                 return self._json(404, {"error": "找不到這個情境，可能已經被刪除"})
-            _, path, source = src
+            _, ref, source = src
             if source == "builtin":
                 return self._json(400, {"error": "內建情境不能刪除；可以直接修改，之後隨時還原預設"})
-            if path.resolve().parent != CUSTOM_DIR.resolve():
+            if not STORE.is_custom_ref(ref):
                 return self._json(400, {"error": "情境檔的位置不對"})
-            # 不直接刪掉：先搬到 .trash，救得回來
-            TRASH_DIR.mkdir(parents=True, exist_ok=True)
-            stamp = time.strftime("%Y%m%d-%H%M%S")
-            dest = TRASH_DIR / f"{path.stem}-{stamp}.json"
-            n = 1
-            while dest.exists():
-                n += 1
-                dest = TRASH_DIR / f"{path.stem}-{stamp}-{n}.json"
-            for attempt in range(5):
-                try:
-                    os.replace(path, dest)
-                    break
-                except PermissionError:  # Windows：檔案剛好被別的程式開著
-                    if attempt == 4:
-                        raise
-                    time.sleep(0.1)
-        self.log_message("情境已移到 .trash：%s", dest.name)
+            # 不直接刪掉：先搬到垃圾桶（本機 .trash、雲端 scenarios:trash），救得回來
+            dest = STORE.trash_custom(ref)
+        self.log_message("情境已移到 .trash：%s", dest)
         self._json(200, {"ok": True, "restored": source == "modified"})
 
     def _editor_draft(self, body):
@@ -2209,10 +3282,14 @@ class Handler(BaseHTTPRequestHandler):
         if len(desc) > 800:
             return self._json(400, {"error": f"描述最多 800 個字（目前 {len(desc)} 字）"})
         t0 = time.monotonic()
+        chain = brain_chain("draft")
+        prompt = draft_messages(desc)
         try:
-            raw, used = complete_json_backup(current_provider(), draft_messages(desc), DRAFT_SCHEMA, 0.7)
+            raw, provider = run_chain(chain, lambda p, last: complete_json(
+                p, prompt, DRAFT_SCHEMA, 0.7, timeout=json_timeout(p, last)))
         except LLMError as e:
             return self._json(502, {"error": str(e)})
+        used = labeled(provider)
         try:
             if not isinstance(raw, dict):
                 raise Invalid("not a dict")
@@ -2220,8 +3297,9 @@ class Handler(BaseHTTPRequestHandler):
         except Invalid:
             return self._json(502, {"error": "AI 寫出來的內容不完整，請再試一次"})
         self.log_message("AI 情境草稿 %.1f 秒（%s）", time.monotonic() - t0, used["label"])
-        # 草稿是剛產生的文字，還沒存；講師檢查後按儲存才會寫進 scenarios/custom/
-        self._json(200, {"scenario": sc, "model": used["label"], "warnings": scenario_warnings(sc)})
+        # 草稿是剛產生的文字，還沒存；講師檢查後按儲存才會寫進自訂情境
+        self._json(200, {"scenario": sc, "model": used["label"], "brain": provider["id"],
+                         "warnings": scenario_warnings(sc)})
 
     # ---- 語音
 
@@ -2239,44 +3317,53 @@ class Handler(BaseHTTPRequestHandler):
             if e.code != 409:
                 self.log_message("語音合成失敗：%s", e.detail or e)  # 原始錯誤留在黑色視窗，方便查原因
             return self._json(409 if e.code == 409 else 502, {"error": str(e)})
+        if ON_CLOUD and len(audio) > TTS_MAX_BYTES:
+            return self._json(502, {"error": "這句太長，雲端一次傳不完，請分成短一點的句子"})  # Vercel 回應上限 4.5 MB
         try:
             self.send_response(200)
             self.send_header("Content-Type", ctype or "audio/mpeg")
             self.send_header("Content-Length", str(len(audio)))
             self.send_header("Cache-Control", "no-store")
+            self._send_common()
             self.end_headers()
             self.wfile.write(audio)
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             pass  # 業務插話時瀏覽器會取消還沒播的句子
 
     def _tts_config(self, body):
-        with _voice_lock:
+        def apply(cfg):
             if "provider" in body:
                 if body["provider"] not in {p["id"] for p in tts_providers()}:
-                    return self._json(400, {"error": "沒有這個語音服務"})
-                VOICE_CFG["provider"] = body["provider"]
+                    raise ValueError("沒有這個語音服務")
+                cfg["provider"] = body["provider"]
             if "model" in body:
-                field, _, _, models = TTS_MODELS.get(tts_provider_id(), ("", "", "", []))
+                field, _, _, models = TTS_MODELS.get(tts_provider_id(cfg), ("", "", "", []))
                 if body["model"] not in {m for m, _ in models}:
-                    return self._json(400, {"error": "沒有這個模型"})
-                VOICE_CFG[field] = body["model"]
-                VOICE_CFG.pop(f"{field}_note", None)
-            save_voice_cfg()
+                    raise ValueError("沒有這個模型")
+                cfg[field] = body["model"]
+                cfg.pop(f"{field}_note", None)
+
+        try:
+            update_voice_cfg(apply)
+        except ValueError as e:
+            return self._json(400, {"error": str(e)})
         self._json(200, tts_status())
 
     def _tts_key(self, body):
         pid = body.get("provider")
-        name = KEY_NAMES.get(pid)
+        name = KEY_NAMES.get(pid) if isinstance(pid, str) else None
         key = str(body.get("key", "")).strip()
         if not name:
             return self._json(400, {"error": "沒有這個語音服務"})
+        if ON_CLOUD:
+            # 雲端不能改檔案：金鑰只能設在 Vercel 的環境變數
+            return self._json(409, {"error": f"請到 Vercel → Settings → Environment Variables 新增 {name} 後 Redeploy",
+                                    "env_name": name, "how": "vercel"})
         if not _KEY_RE.match(key):
             return self._json(400, {"error": "金鑰格式看起來不對，請重新複製一次"})
         set_env_value(name, key)
         reload_env()
-        with _voice_lock:
-            VOICE_CFG["provider"] = pid
-            save_voice_cfg()
+        update_voice_cfg(lambda cfg: cfg.__setitem__("provider", pid))
         self._json(200, tts_status())
 
     def _tts_assign(self, body):
@@ -2293,7 +3380,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(502, {"error": str(e)})
         brief = str(body.get("brief") or "")[:300] if pid == "gemini" else ""
         set_assigned(pid, avatar, voice_id, str(body.get("name") or voice_id)[:60], brief)
-        _gemini_fallback.pop(avatar, None)
+        STORE.eph_pop(GEMFB + avatar)
         self._json(200, tts_status())
 
     def _tts_design(self, body):
@@ -2305,13 +3392,31 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(404, {"error": "找不到這位客戶"})
         brief = str(body.get("brief", "")).strip()[:300] or voice_brief(cust)
         try:
-            with _resolve_lock:
+            with voice_lock("gemini", avatar):
                 design_voice(avatar, brief)
         except tts.TTSError as e:
             return self._json(502, {"error": str(e)})
         self._json(200, tts_status())
 
     # ---- 回應工具
+
+    def _send_common(self):
+        # 登入 cookie 之類的額外標頭，加上兩個基本的安全標頭
+        for k, v in getattr(self, "_extra", None) or ():
+            self.send_header(k, v)
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+
+    def _redirect(self, location):
+        try:
+            self.send_response(302)
+            self.send_header("Location", location)
+            self.send_header("Content-Length", "0")
+            self.send_header("Cache-Control", "no-store")
+            self._send_common()
+            self.end_headers()
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            pass
 
     def _static(self, path):
         if path in ("", "/"):
@@ -2320,12 +3425,16 @@ class Handler(BaseHTTPRequestHandler):
         if WEB_DIR not in target.parents or not target.is_file():
             return self._json(404, {"error": "not found"})
         data = target.read_bytes()
-        self.send_response(200)
-        self.send_header("Content-Type", MIME.get(target.suffix.lower(), "application/octet-stream"))
-        self.send_header("Content-Length", str(len(data)))
-        self.send_header("Cache-Control", "no-store")
-        self.end_headers()
-        self.wfile.write(data)
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", MIME.get(target.suffix.lower(), "application/octet-stream"))
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
+            self._send_common()
+            self.end_headers()
+            self.wfile.write(data)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            pass
 
     def _json(self, code, obj):
         data = json.dumps(obj, ensure_ascii=False).encode("utf-8")
@@ -2334,6 +3443,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(data)))
             self.send_header("Cache-Control", "no-store")
+            self._send_common()
             self.end_headers()
             self.wfile.write(data)
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
@@ -2433,14 +3543,11 @@ def main():
     print("=" * 52)
     print("  AI 理專對練教練 已啟動")
     print(f"  網址：{url}")
-    print(f"  AI 大腦：{current_provider()['label']}")
+    print(f"  AI 大腦：{brain_chain('chat')[0]['label']}")
     print("  關閉這個視窗即可停止")
     print("=" * 52)
-    if current_provider()["kind"] == "ollama":
-        # 先把模型載入顯卡，第一次對話才不用等冷啟動
-        threading.Thread(target=_warm, args=(current_provider(),), daemon=True).start()
-    elif current_provider().get("live"):
-        warm_local_backup()
+    # 先把模型載入顯卡，第一次對話才不用等冷啟動（本機模型是備援時也先暖好）
+    warm_brains()
     if "--no-browser" not in sys.argv:
         threading.Timer(0.8, open_browser, args=(url,)).start()
     try:

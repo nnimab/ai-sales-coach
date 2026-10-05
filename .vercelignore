@@ -1,0 +1,15 @@
+# 金鑰、個人資料和只在本機用的檔案，不要上傳到 Vercel
+.env
+.env.local
+.chatgpt/
+.vercel/
+voices.json
+profile.json
+tts_cache/
+scenarios/custom/
+__pycache__/
+*.pyc
+*.tmp
+tests/
+tools/
+start.bat

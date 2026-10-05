@@ -1,0 +1,10 @@
+[project]
+name = "ai-sales-coach"
+version = "1.0.0"
+description = "AI 理專對練教練"
+requires-python = ">=3.10"
+# 只有雲端（Vercel）存登入資料時會用到；本機 start.bat 不需要安裝
+dependencies = ["cryptography>=42"]
+
+[tool.vercel]
+entrypoint = "app:app"

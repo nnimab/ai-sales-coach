@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="zh-Hant-TW" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>登入 · AI 對練教練</title>
+<script>try { const t = localStorage.getItem('aicoach.theme'); if (t) document.documentElement.dataset.theme = t; } catch (e) { /* 無法讀取就用預設深色 */ }</script>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%23000'/%3E%3Cpath d='M9 21c0-3.9 3.1-7 7-7s7 3.1 7 7' stroke='%23fff' stroke-width='2.4' fill='none' stroke-linecap='round'/%3E%3Ccircle cx='16' cy='10' r='3' fill='%23fff'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+TC:wght@400;500;600;700&display=swap">
+<!-- 用絕對路徑：這頁網址是 /login，沒登入也只拿得到這兩個檔案 -->
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<main class="login-page">
+  <div class="login-box">
+    <span class="logo" aria-hidden="true"><svg viewBox="0 0 32 32"><path d="M9 21c0-3.9 3.1-7 7-7s7 3.1 7 7" stroke="currentColor" stroke-width="2.6" fill="none" stroke-linecap="round"/><circle cx="16" cy="10" r="3" fill="currentColor"/></svg></span>
+    <h1>對練教練</h1>
+    <p class="login-sub">請輸入通行碼</p>
+    <div class="notice hidden" id="setupBox" role="status"></div>
+    <form class="login-form" id="loginForm" novalidate>
+      <label class="field"><span>名字（選填）</span><input id="loginName" type="text" maxlength="20" autocomplete="nickname" spellcheck="false"></label>
+      <label class="field"><span>通行碼</span><input id="loginCode" type="password" maxlength="200" autocomplete="current-password" spellcheck="false"></label>
+      <p class="login-err" id="loginErr" role="alert"></p>
+      <button class="pill primary" id="btnLogin" type="submit">登入</button>
+    </form>
+    <p class="muted login-foot">只限本人使用，不要把通行碼給別人。</p>
+  </div>
+</main>
+<script src="/login.js"></script>
+</body>
+</html>

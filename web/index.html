@@ -25,6 +25,7 @@
       <button class="sb-item nav-item" data-nav="scenarios" type="button"><span data-icon="list"></span>情境設定</button>
       <button class="sb-item nav-item" data-nav="rep" type="button"><span data-icon="user"></span>我的背景</button>
       <button class="sb-item nav-item" data-nav="voices" type="button"><span data-icon="volume"></span>聲音設定</button>
+      <button class="sb-item nav-item" data-nav="brain" type="button"><span data-icon="cpu"></span>AI 大腦</button>
     </nav>
     <div class="sb-section">最近練習</div>
     <div class="sb-recent" id="recentList"></div>
@@ -59,7 +60,7 @@
           <h1>練習紀錄</h1>
           <button class="pill ghost" id="btnClearHistory" type="button"><span data-icon="trash"></span>清除</button>
         </div>
-        <p class="page-sub">紀錄只存在這台電腦的瀏覽器裡。</p>
+        <p class="page-sub" id="historyNote">紀錄只存在這台電腦的瀏覽器裡。</p>
         <div class="list" id="historyBox"></div>
       </div>
     </section>
@@ -76,11 +77,11 @@
         <div class="svc-grid" id="ttsProviders"></div>
         <div class="key-box hidden" id="keyBox">
           <ol class="key-steps" id="keySteps"></ol>
-          <div class="key-row">
+          <div class="key-row" id="keyRow">
             <input id="keyInput" type="password" autocomplete="off" spellcheck="false" placeholder="貼上 API 金鑰">
             <button class="pill primary" id="btnSaveKey" type="button">儲存</button>
           </div>
-          <p class="muted">金鑰只會存在這台電腦的 .env 檔案裡，不會上傳到別的地方。</p>
+          <p class="muted" id="keyNote">金鑰只會存在這台電腦的 .env 檔案裡，不會上傳到別的地方。</p>
         </div>
         <div class="model-row hidden" id="modelRow">
           <span>語音模型</span>
@@ -89,6 +90,65 @@
         </div>
         <h2 class="sec-title">客戶的聲音</h2>
         <div class="voice-customers" id="voiceCustomers"></div>
+      </div>
+    </section>
+
+    <!-- AI 大腦 -->
+    <section id="view-brain" class="view">
+      <div class="page">
+        <div class="page-head">
+          <h1>AI 大腦</h1>
+          <span class="tag" id="brainBadge"></span>
+        </div>
+        <p class="page-sub">選誰來扮演客戶、當教練和評分。即時通話另外開關。</p>
+        <div id="brainNotices"></div>
+
+        <h2 class="sec-title">文字大腦</h2>
+        <div class="brain-row">
+          <select id="brainSelect" class="select" aria-label="文字大腦"></select>
+          <span class="muted" id="brainMsg"></span>
+        </div>
+        <p class="muted brain-note" id="brainChain"></p>
+
+        <div id="cgSection" class="hidden">
+          <h2 class="sec-title">ChatGPT 方案</h2>
+          <!-- 卡片內容依登入狀態重畫；模型和雲端欄位不重畫，打到一半不會被洗掉 -->
+          <div class="brain-card" id="cgCard"></div>
+          <div class="brain-card cg-models hidden" id="cgModels">
+            <label class="field"><span>客戶和評分用的模型</span><select id="cgModel"></select></label>
+            <label class="field"><span>即時教練用的模型（選快一點的）</span><select id="cgCoachModel"></select></label>
+            <p class="muted wide" id="cgModelNote"></p>
+          </div>
+          <details class="brain-card cg-cloud hidden" id="cgCloud">
+            <summary><b>雲端版（Vercel）</b><span class="tag" id="cgCloudTag"></span></summary>
+            <p class="muted">在這台電腦登入一次，憑證會加密傳到你的雲端網站，之後由雲端自己續期；只限你本人使用。</p>
+            <div class="form-grid">
+              <label class="field"><span>雲端網址</span><input id="cgCloudUrl" type="url" maxlength="200" autocomplete="off" spellcheck="false" placeholder="https://你的專案.vercel.app"></label>
+              <label class="field"><span>同步密碼</span><input id="cgSyncKey" type="password" maxlength="200" autocomplete="off" spellcheck="false" placeholder="和 Vercel 的 CHATGPT_SYNC_KEY 一樣"></label>
+            </div>
+            <div class="cg-actions">
+              <button class="pill" id="btnCloudSave" type="button">儲存並測試</button>
+              <button class="pill primary" id="btnCloudSync" type="button">登入並同步到雲端</button>
+            </div>
+            <p class="muted" id="cgCloudInfo"></p>
+          </details>
+        </div>
+
+        <div id="liveSection" class="hidden">
+          <h2 class="sec-title">即時通話</h2>
+          <div class="brain-card setting-row">
+            <div class="setting-main"><b>即時通話（Gemini Live）</b><p class="muted" id="liveDesc"></p></div>
+            <label class="switch lg"><input type="checkbox" id="liveSwitch" aria-label="即時通話（Gemini Live）"><span class="knob"></span></label>
+          </div>
+        </div>
+
+        <div id="authSection" class="hidden">
+          <h2 class="sec-title">登入</h2>
+          <div class="brain-card setting-row">
+            <div class="setting-main"><b id="authName"></b><p class="muted" id="authRole"></p></div>
+            <button class="pill" id="btnLogout" type="button">登出</button>
+          </div>
+        </div>
       </div>
     </section>
 
@@ -146,7 +206,7 @@
           <button class="pill ghost" id="btnRepReset" type="button">恢復預設</button>
           <button class="pill primary" id="btnRepSave" type="button" disabled>儲存</button>
         </div>
-        <p class="muted">只存在這台電腦的 profile.json，下一通電話開始生效。</p>
+        <p class="muted" id="repNote">只存在這台電腦的 profile.json，下一通電話開始生效。</p>
       </div>
     </section>
 
@@ -246,6 +306,7 @@
                 <span class="mic-state" id="micState" aria-live="polite"></span>
                 <label class="switch"><input type="checkbox" id="autoListen" checked><span class="knob"></span>客戶講完自動開麥</label>
                 <span class="hint" id="micHint">停頓 1.5 秒自動送出 · 建議戴耳機</span>
+                <span class="plan-tag hidden" id="planTag">使用 ChatGPT 方案 · <a href="https://chatgpt.com/settings/usage" target="_blank" rel="noopener" title="到 ChatGPT 查看和調整用量">Manage usage</a></span>
               </div>
             </div>
           </section>
@@ -360,6 +421,18 @@
       <li>評估六大面向</li>
       <li>產生建議說法</li>
     </ol>
+  </div>
+</div>
+
+<!-- 第一次用 ChatGPT 方案登入時說明一次 -->
+<div id="cgWelcome" class="overlay hidden" role="dialog" aria-modal="true" aria-labelledby="cgWelcomeTitle">
+  <div class="modal welcome-modal">
+    <h2 id="cgWelcomeTitle">你正在使用 ChatGPT 方案</h2>
+    <p class="sub">一般通話的客戶、教練和評分會用你的 ChatGPT 方案額度，不用另外付 API 費用。用量可以到 ChatGPT 設定查看和調整。</p>
+    <div class="modal-actions">
+      <a class="pill" id="cgWelcomeUsage" href="https://chatgpt.com/settings/usage" target="_blank" rel="noopener">Manage usage</a>
+      <button class="pill primary" id="btnCgWelcomeOk" type="button">知道了</button>
+    </div>
   </div>
 </div>
 

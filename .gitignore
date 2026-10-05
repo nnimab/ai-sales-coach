@@ -1,7 +1,12 @@
 # 金鑰與個人設定：不要上傳
 .env
+.env.local
 voices.json
 profile.json
+# ChatGPT 登入資料（token）
+.chatgpt/
+# Vercel 指令產生的本機連結資料
+.vercel/
 
 # 講師自己新增或修改的情境（含隱藏設定），和 profile.json 一樣只留在這台電腦；要分享就刪掉這行
 scenarios/custom/

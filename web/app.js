@@ -39,6 +39,13 @@ const state = {
   evalBusy: false,
   hitWords: new Set(), // 講話中已經跳過提醒的禁語，定案時不再重複跳
   rep: null, // 業務自己的背景（稱呼、職稱），由伺服器算好
+  // 伺服器狀態：舊版伺服器沒有的欄位都當作本機
+  status: null,
+  hosted: !['127.0.0.1', 'localhost', '[::1]'].includes(location.hostname),
+  provider: '',
+  active: '',
+  canAdmin: true,
+  fallbackNoted: false, // 這通電話已經提醒過「改用備援」
 };
 
 // ------------------------------------------------------------------ 圖示（線條風格）
@@ -82,6 +89,8 @@ const ICONS = {
   arrowUp: '<path d="m5 12 7-7 7 7"/><path d="M12 19V5"/>',
   moon: '<path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>',
   sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/>',
+  cpu: '<rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6" rx="1"/><path d="M15 2v2"/><path d="M15 20v2"/><path d="M2 15h2"/><path d="M2 9h2"/><path d="M20 15h2"/><path d="M20 9h2"/><path d="M9 2v2"/><path d="M9 20v2"/>',
+  external: '<path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>',
 };
 
 function icon(name) {
@@ -94,17 +103,37 @@ function hydrateIcons(root = document) {
 
 // ------------------------------------------------------------------ 共用
 
-const OFFLINE = '連不到對練程式，請確認黑色視窗還開著，或重新執行 start.bat';
+const offline = () => (state.hosted
+  ? '連不到雲端網站，請檢查網路後重新整理'
+  : '連不到對練程式，請確認黑色視窗還開著，或重新執行 start.bat');
 const httpError = (status) => `伺服器回應錯誤（代碼 ${status}）`;
+const ADMIN_ONLY = '需要管理者通行碼：請登出後用管理者通行碼登入';
+
+// 雲端登入過期或還沒設定好：回登入頁（登入頁會列出缺什麼）
+let leaving = false;
+function toLogin() {
+  if (leaving) return;
+  leaving = true;
+  location.href = '/login';
+}
 
 // 連不到伺服器時，瀏覽器只會給英文的 Failed to fetch：換成看得懂的中文；自己取消的照原樣丟出
 async function request(path, opts) {
+  let res;
   try {
-    return await fetch(path, opts);
+    res = await fetch(path, opts);
   } catch (e) {
     if (e.name === 'AbortError' || e.name === 'TimeoutError') throw e;
-    throw new Error(OFFLINE);
+    throw new Error(offline());
   }
+  if (res.status === 401 || res.status === 503) {
+    const d = await res.clone().json().catch(() => ({}));
+    if (d.login || d.setup) {
+      toLogin();
+      throw new Error('請先登入');
+    }
+  }
+  return res;
 }
 
 async function api(path, body, signal) {
@@ -114,12 +143,18 @@ async function api(path, body, signal) {
   const res = await request(path, opts);
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    // 保留伺服器回的欄位（例如 field），編輯器才知道要標紅哪一格
-    const e = new Error(data.error || httpError(res.status));
+    // 保留伺服器回的欄位（例如 field），編輯器才知道要標紅哪一格；需要管理者的由呼叫端照常跳通知
+    const e = new Error(res.status === 403 && data.admin ? ADMIN_ONLY : data.error || httpError(res.status));
     e.data = data;
     throw e;
   }
   return data;
+}
+
+// 只接受 ChatGPT 自己的網址，伺服器給的值怪怪的就用預設
+function usageUrl() {
+  const u = state.status?.chatgpt?.manage_usage_url;
+  return typeof u === 'string' && /^https:\/\/chatgpt\.com\//.test(u) ? u : 'https://chatgpt.com/settings/usage';
 }
 
 // text 可含 HTML：呼叫端要自行跳脫使用者或 AI 產生的內容
@@ -193,6 +228,7 @@ function go(name) {
   if (name === 'scenarios') ScenarioAdmin.renderList();
   if (name === 'voices') renderVoices();
   else stopPreview();
+  if (name === 'brain') Brain.render(true);
   show(name);
   setNav(name);
 }
@@ -205,40 +241,580 @@ window.addEventListener('beforeunload', (e) => {
 
 // ------------------------------------------------------------------ AI 大腦狀態
 
-async function refreshStatus() {
-  try {
-    const s = await api('/api/status');
-    const sig = JSON.stringify(s.providers) + s.provider;
-    if (sig !== state.statusSig) {
-      state.statusSig = sig;
-      $('#providerSelect').innerHTML = s.providers.map((p) =>
-        `<option value="${esc(p.id)}"${p.id === s.provider ? ' selected' : ''}${p.configured ? '' : ' disabled'}>${esc(p.label)}${p.configured ? '' : '（未設定）'}</option>`).join('');
-    }
-    $('#provider').classList.toggle('ready', s.ready);
-    $('#provider').classList.toggle('down', !s.ready);
-    $('#providerMsg').textContent = s.message;
-    state.providerReady = s.ready;
-    state.providerLabel = s.label;
-    state.live = !!s.live;
-    state.coachParallel = !!s.coach_parallel;
-  } catch {
-    $('#provider').classList.remove('ready');
-    $('#provider').classList.add('down');
-    $('#providerMsg').textContent = '伺服器沒有回應，請重新執行 start.bat';
-    state.providerReady = false;
+const shortLabel = (label) => String(label || '').replace(/（.*$/, '').trim();
+// 名字代進句子後，中文和中文之間不留空白（「改用 本機模型」→「改用本機模型」）；英文前後的空白保留
+const tidy = (s) => String(s).replace(CJK_GAP, '$1'); // CJK_GAP 在下面「即時對話」那段
+
+// ChatGPT 不能用時接手的大腦：照設定好的備援順序，沒有就籠統說
+function backupName() {
+  const ok = (id) => (state.status?.providers || []).some((p) => p.id === id && p.configured);
+  if (ok('gemini')) return 'Gemini';
+  return ok('ollama') ? '本機模型' : '其他大腦';
+}
+
+function brainName(id) {
+  if (id === 'chatgpt') return 'ChatGPT';
+  const p = (state.status?.providers || []).find((x) => x.id === id);
+  return shortLabel(p?.label) || id;
+}
+
+// 沒設定好的選項不能選；ChatGPT 要先登入（雲端版是從本機同步上去）
+function providerOptions(s) {
+  const why = (p) => (p.id !== 'chatgpt' ? '（未設定）' : s.chatgpt?.mode === 'synced' ? '（未同步）' : '（未登入）');
+  return (s.providers || []).map((p) =>
+    `<option value="${esc(p.id)}"${p.id === s.provider ? ' selected' : ''}${p.configured ? '' : ' disabled'}>${esc(p.label)}${p.configured ? '' : why(p)}</option>`).join('');
+}
+
+// 雲端版：資料存在雲端資料庫，不是這台電腦的檔案
+function hostedCopy() {
+  const kind = state.status?.storage?.kind;
+  const cloud = state.hosted || (!!kind && kind !== 'file');
+  $('#historyNote').textContent = cloud ? '紀錄只存在這個瀏覽器裡。' : '紀錄只存在這台電腦的瀏覽器裡。';
+  $('#repNote').textContent = !cloud ? '只存在這台電腦的 profile.json，下一通電話開始生效。'
+    : kind === 'memory' ? '雲端資料庫還沒接上，重新部署後會不見；下一通電話開始生效。'
+      : '存在雲端資料庫（Upstash），下一通電話開始生效。';
+}
+
+// 通話畫面：正在用 ChatGPT 方案時照 OpenAI 的規定標示，並附上 Manage usage
+function updatePlanTag() {
+  const tag = $('#planTag');
+  tag.classList.toggle('hidden', state.active !== 'chatgpt');
+  tag.querySelector('a').href = usageUrl();
+}
+
+// ChatGPT 用量到上限或登入過期：狀態一變就說一次（用量上限要附 Manage usage）
+function chatgptAlerts(prev, s) {
+  const c = s.chatgpt;
+  if (!prev || !c || s.provider !== 'chatgpt') return;
+  const backup = s.active && s.active !== 'chatgpt' ? brainName(s.active) : 'Gemini';
+  if (c.cooldown_until > Date.now() / 1000 && c.cooldown_until !== prev.cooldown_until) {
+    toast(`${esc(tidy(`用量已達上限，先改用 ${backup}。`))} <a href="${esc(usageUrl())}" target="_blank" rel="noopener">Manage usage</a>`, 'warn', 10000, 'ChatGPT 方案');
+  } else if (c.needs_login && !prev.needs_login) {
+    const how = s.hosted ? '請在本機版按「登入並同步到雲端」' : '請到「AI 大腦」重新登入';
+    toast(esc(tidy(`登入過期：${how}。先改用 ${backup}。`)), 'warn', 10000, 'ChatGPT');
   }
 }
 
-$('#providerSelect').addEventListener('change', async (e) => {
+function applyStatus(s) {
+  const prev = state.status;
+  state.status = s;
+  if (typeof s.hosted === 'boolean') state.hosted = s.hosted;
+  state.provider = s.provider || '';
+  state.active = s.active || s.provider || '';
+  state.canAdmin = s.can_admin !== false;
+  const sig = JSON.stringify(s.providers) + s.provider + (s.chatgpt?.mode || '') + state.canAdmin;
+  if (sig !== state.statusSig) {
+    state.statusSig = sig;
+    $('#providerSelect').innerHTML = providerOptions(s);
+  }
+  $('#providerSelect').disabled = !state.canAdmin;
+  $('#provider').classList.toggle('ready', s.ready);
+  $('#provider').classList.toggle('down', !s.ready);
+  $('#providerMsg').textContent = s.message;
+  state.providerReady = s.ready;
+  state.providerLabel = s.label;
+  state.live = !!s.live;
+  state.coachParallel = !!s.coach_parallel;
+  updatePlanTag();
+  hostedCopy();
+  chatgptAlerts(prev?.chatgpt, s);
+  if ($('#view-brain').classList.contains('active')) Brain.render();
+}
+
+let statusAt = 0;
+async function refreshStatus() {
+  let s;
   try {
-    await api('/api/provider', { provider: e.target.value });
+    s = await api('/api/status');
+  } catch {
+    $('#provider').classList.remove('ready');
+    $('#provider').classList.add('down');
+    $('#providerMsg').textContent = state.hosted ? '連不到雲端網站，請重新整理' : '伺服器沒有回應，請重新執行 start.bat';
+    state.providerReady = false;
+    return;
+  }
+  statusAt = Date.now();
+  applyStatus(s);
+}
+
+// 本機 6 秒問一次；雲端每問一次都算一次函式呼叫，改成 30 秒；分頁沒在看就不問
+let pollTimer = 0;
+function pollStatus() {
+  clearTimeout(pollTimer);
+  pollTimer = setTimeout(async () => {
+    if (!document.hidden) await refreshStatus();
+    pollStatus();
+  }, state.hosted ? 30000 : 6000);
+}
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && statusAt && Date.now() - statusAt > 5000) refreshStatus();
+});
+
+async function setProvider(id) {
+  try {
+    await api('/api/provider', { provider: id });
     toast('已切換 AI 大腦', 'info', 2000);
   } catch (err) {
-    toast(esc(err.message), 'error');
+    toast(esc(err.message), 'error', 7000);
   }
   state.statusSig = '';
   refreshStatus();
+}
+
+$('#providerSelect').addEventListener('change', (e) => setProvider(e.target.value));
+
+// 主要大腦臨時不能用、這句改由備援回答：每通電話只提醒一次
+function noteFallback(label, brain) {
+  if (state.fallbackNoted) return;
+  state.fallbackNoted = true;
+  toast(esc(tidy(`${brainName(state.provider)} 暫時不能用，改用 ${shortLabel(label) || brainName(brain)}`)), 'warn', 5000);
+  setTimeout(refreshStatus, 800);
+}
+
+// ------------------------------------------------------------------ AI 大腦頁（文字大腦、ChatGPT 方案、即時通話）
+
+const Brain = (() => {
+  let cardSig = '';
+  let noticeSig = '';
+  let modelsKey = ''; // 已經載入哪個帳號的模型清單
+  let modelSig = '';
+  let models = [];
+  let urlEdited = false;
+  let opened = false;
+  let cloudBusy = false;
+  let liveBusy = false;
+
+  const nowSec = () => Date.now() / 1000;
+  const toMs = (t) => (typeof t === 'number' ? (t < 1e12 ? t * 1000 : t) : Date.parse(t) || 0);
+  const hhmm = (sec) => {
+    const d = new Date(sec * 1000);
+    return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  };
+  const tag = (text, kind = '') => `<span class="tag ${kind}">${esc(text)}</span>`;
+  const usageLink = (primary) => `<a class="pill${primary ? ' primary' : ''}" href="${esc(usageUrl())}" target="_blank" rel="noopener" title="到 ChatGPT 查看和調整用量">Manage usage${icon('external')}</a>`;
+  // 按鈕文字照 OpenAI 規定用 Continue with ChatGPT；官方圖示還沒確認，先只用文字
+  const signInBtn = () => '<button class="pill primary" type="button" data-act="signin">Continue with ChatGPT</button>';
+
+  // local：這台電腦自己登入；synced：本機登入後同步到雲端；hosted：OpenAI 核准的雲端登入
+  function phaseOf(c) {
+    const synced = c.mode === 'synced';
+    if (c.mode === 'off') return 'off';
+    if (!synced && c.available === false && c.blocked_reason) return 'blocked';
+    if (c.needs_login) return 'expired';
+    if (!c.signed_in) return synced ? 'unsynced' : 'signin';
+    if (c.cooldown_until > nowSec()) return 'cooldown';
+    if (c.plan_usage === false) return 'noplan';
+    return 'on';
+  }
+
+  function cardHTML(s, c, phase) {
+    const fb = esc(backupName());
+    const synced = c.mode === 'synced';
+    const inUse = state.active === 'chatgpt';
+    const email = c.email ? `<p class="cg-who">${esc(c.email)}</p>` : '';
+    const logout = synced
+      ? (state.canAdmin ? '<button class="pill ghost" type="button" data-act="clear">清除雲端的 ChatGPT 憑證</button>' : '')
+      : '<button class="pill ghost" type="button" data-act="logout">登出</button>';
+    let head = '';
+    let body = '';
+    let acts = '';
+    switch (phase) {
+      case 'off':
+        head = tag('沒有開啟');
+        body = `<p>${esc(c.blocked_reason || (s.hosted
+          ? '雲端版還沒開 ChatGPT：到 Vercel 新增 CHATGPT_SYNC_KEY 後 Redeploy，再從本機版同步。'
+          : '這裡不能用 ChatGPT 登入。'))}</p>`;
+        break;
+      case 'blocked':
+        head = tag('不能使用');
+        body = `<p>${esc(c.blocked_reason)}</p>`;
+        break;
+      case 'unsynced':
+        head = tag('還沒同步');
+        body = `<p>還沒同步：請在本機版按「登入並同步到雲端」。</p><p class="muted">同步之前由 ${fb} 回答。</p>`;
+        break;
+      case 'expired':
+        head = tag('登入過期', 'amber');
+        body = synced
+          ? `<p>ChatGPT 登入過期：請在本機版按「登入並同步到雲端」。</p><p class="muted">這段時間由 ${fb} 回答。</p>`
+          : `${email}<p>登入過期，請重新登入。這段時間由 ${fb} 回答。</p>`;
+        acts = (synced ? '' : signInBtn()) + logout;
+        break;
+      case 'signin':
+        body = '<p>用你自己的 ChatGPT Plus 或 Pro 方案當文字大腦，不用另外付 API 費用。只限你本人的帳號。</p>'
+          + `<p class="muted">${c.mode === 'hosted' ? '' : '這是這台電腦的登入；雲端版在下面另外同步。'}ChatGPT 不能用時自動改用 ${fb}。</p>`;
+        acts = signInBtn();
+        break;
+      case 'cooldown':
+        head = tag('用量已達上限', 'amber');
+        body = `${email}<p>用量已達上限，暫用 ${fb}${Number.isFinite(c.cooldown_until) ? `，約 ${hhmm(c.cooldown_until)} 後再試` : ''}。</p>`;
+        acts = usageLink(true) + logout;
+        break;
+      case 'noplan':
+        head = tag('不能用方案', 'amber');
+        body = `${email}<p>這個帳號不能用 ChatGPT 方案（要 Plus 或 Pro），先用 ${fb}。</p>`;
+        acts = (synced ? '' : signInBtn()) + logout;
+        break;
+      default:
+        head = inUse ? tag('使用 ChatGPT 方案', 'green') : tag('已登入');
+        body = email + (inUse
+          ? `<p class="muted">一般通話的客戶、教練和評分都用你的 ChatGPT 方案；不能用時自動改用 ${fb}。</p>`
+          : '<p class="muted">已登入，但上面的文字大腦沒有選 ChatGPT。</p>')
+          + (synced ? '<p class="muted">憑證加密存在雲端資料庫，由雲端自己續期。</p>' : '');
+        acts = usageLink(false)
+          + (!inUse && state.canAdmin ? '<button class="pill" type="button" data-act="use">改用 ChatGPT</button>' : '')
+          + logout;
+    }
+    return tidy(`<div class="cg-head"><b>ChatGPT</b>${head}</div>${body}${acts ? `<div class="cg-actions">${acts}</div>` : ''}`);
+  }
+
+  function fillModels(c) {
+    const sig = JSON.stringify([models, c.model, c.coach_model, state.canAdmin]);
+    if (sig === modelSig) return; // 沒變就不重畫，下拉選單開著也不會被關掉
+    modelSig = sig;
+    const first = models[0]?.display_name || models[0]?.slug || '';
+    const opts = (cur) => [`<option value="">自動${first ? `（${esc(first)}）` : ''}</option>`]
+      .concat(models.map((m) => `<option value="${esc(m.slug)}"${m.slug === cur ? ' selected' : ''}>${esc(m.display_name || m.slug)}</option>`))
+      .concat(cur && !models.some((m) => m.slug === cur) ? [`<option value="${esc(cur)}" selected>${esc(cur)}（不在清單裡）</option>`] : [])
+      .join('');
+    const pick = (v) => (v === 'auto' ? '' : v || ''); // 「自動」有的版本存成 auto
+    $('#cgModel').innerHTML = opts(pick(c.model));
+    $('#cgCoachModel').innerHTML = opts(pick(c.coach_model));
+    $('#cgModel').disabled = !state.canAdmin;
+    $('#cgCoachModel').disabled = !state.canAdmin;
+  }
+
+  async function loadModels(c, force) {
+    const key = `${c.mode}|${c.email}`;
+    if (!force && key === modelsKey) { fillModels(c); return; }
+    modelsKey = key;
+    $('#cgModelNote').textContent = '載入模型清單中…';
+    try {
+      const d = await api('/api/chatgpt/models');
+      models = Array.isArray(d.models) ? d.models.filter((m) => m && m.slug) : [];
+      $('#cgModelNote').textContent = models.length ? '「自動」用清單的第一個。' : '這個帳號沒有可用的模型。';
+    } catch (err) {
+      models = []; // 定時更新狀態時不重抓，下次進這一頁再試
+      $('#cgModelNote').textContent = `讀不到模型清單：${err.message}`;
+    }
+    fillModels(state.status?.chatgpt || c);
+  }
+
+  function cloud(s, c) {
+    const box = $('#cgCloud');
+    const show = !s.hosted && (c.mode || 'local') === 'local';
+    box.classList.toggle('hidden', !show);
+    if (!show) return;
+    const cl = c.cloud || {};
+    const url = $('#cgCloudUrl');
+    if (cl.url && !urlEdited && document.activeElement !== url) url.value = cl.url;
+    if (!opened) {
+      opened = true;
+      if (cl.configured || cl.last_error) box.open = true;
+    }
+    // 同步密碼不會從伺服器拿回來，只顯示有沒有存
+    $('#cgSyncKey').placeholder = cl.configured ? '已儲存；要換才重新填' : '和 Vercel 的 CHATGPT_SYNC_KEY 一樣';
+    const at = cl.last_sync_at ? toMs(cl.last_sync_at) : 0;
+    const t = $('#cgCloudTag');
+    if (cl.last_error) { t.textContent = '同步失敗'; t.className = 'tag red'; }
+    else if (at) { t.textContent = '已同步'; t.className = 'tag green'; }
+    else if (cl.configured) { t.textContent = '已連上'; t.className = 'tag'; }
+    else { t.textContent = ''; t.className = 'tag'; }
+    let info = '先填雲端網址和同步密碼，按「儲存並測試」。';
+    if (at) info = `上次同步：${fmtDate(at)}${cl.last_sync_email ? ` · ${cl.last_sync_email}` : ''}`;
+    else if (cl.configured) info = '已連上雲端，按「登入並同步到雲端」用你的帳號登入。';
+    $('#cgCloudInfo').innerHTML = esc(info) + (cl.last_error ? `<span class="err-text">${esc(cl.last_error)}</span>` : '');
+    $('#btnCloudSave').disabled = cloudBusy || !state.canAdmin;
+    $('#btnCloudSync').disabled = !cl.configured || !state.canAdmin;
+    url.disabled = !state.canAdmin;
+    $('#cgSyncKey').disabled = !state.canAdmin;
+  }
+
+  function chatgpt(s, enter) {
+    const c = s.chatgpt;
+    $('#cgSection').classList.toggle('hidden', !c);
+    if (!c) return; // 舊版伺服器沒有 ChatGPT
+    const phase = phaseOf(c);
+    const sig = JSON.stringify([phase, c.email, c.mode, c.blocked_reason, c.cooldown_until, state.active, state.canAdmin, s.hosted, usageUrl(), backupName()]);
+    if (sig !== cardSig) {
+      cardSig = sig;
+      $('#cgCard').innerHTML = cardHTML(s, c, phase);
+    }
+    const showModels = phase === 'on' || phase === 'cooldown';
+    $('#cgModels').classList.toggle('hidden', !showModels);
+    if (showModels) loadModels(c, enter);
+    cloud(s, c);
+  }
+
+  function live(s) {
+    const has = typeof s.live_enabled === 'boolean';
+    $('#liveSection').classList.toggle('hidden', !has);
+    if (!has) return; // 舊版伺服器：即時通話跟著「Gemini」大腦
+    const sw = $('#liveSwitch');
+    const avail = s.live_available !== false;
+    if (!liveBusy) sw.checked = s.live_enabled;
+    // 不能用但還開著（例如金鑰被拿掉）：還是讓人關掉
+    sw.disabled = liveBusy || !state.canAdmin || (!avail && !s.live_enabled);
+    let desc = '關閉時，客戶用文字大腦回話再念出來；講完停一下才會送出。';
+    if (!avail) desc = s.live_reason || '要先設定 Gemini 金鑰才能開。';
+    else if (s.live_enabled) desc = '通話用 Gemini Live：可以直接插話，客戶會停下來聽。教練和評分仍用上面的文字大腦。';
+    $('#liveDesc').textContent = desc;
+  }
+
+  function notices(s) {
+    const out = [];
+    const probs = Array.isArray(s.setup_problems) ? s.setup_problems.filter(Boolean) : [];
+    if (probs.length) out.push(`<div class="notice"><b>雲端還沒設定好</b><ul>${probs.map((p) => `<li>${esc(p)}</li>`).join('')}</ul></div>`);
+    if (s.storage?.warning) out.push(`<div class="notice">${esc(s.storage.warning)}</div>`);
+    const html = out.join('');
+    if (html !== noticeSig) { noticeSig = html; $('#brainNotices').innerHTML = html; }
+  }
+
+  function auth(s) {
+    const a = s.auth;
+    const show = !!a?.required;
+    $('#authSection').classList.toggle('hidden', !show);
+    if (!show) return;
+    $('#authName').textContent = a.name ? `已登入：${a.name}` : '已登入';
+    $('#authRole').textContent = state.canAdmin ? '可以改設定。' : '只能練習，不能改設定；要改請用管理者通行碼登入。';
+  }
+
+  function render(enter = false) {
+    const s = state.status;
+    if (!s) { $('#brainMsg').textContent = '連線中…'; return; }
+    $('#brainBadge').textContent = s.label ? `目前：${shortLabel(s.label)}` : '';
+    const sel = $('#brainSelect');
+    // 切換失敗時要畫回原本的選擇
+    if (sel.dataset.sig !== state.statusSig || sel.value !== s.provider) {
+      sel.dataset.sig = state.statusSig;
+      sel.innerHTML = providerOptions(s);
+    }
+    sel.disabled = !state.canAdmin;
+    $('#brainMsg').textContent = s.message || '';
+    // 備援：主要大腦不能用時依序改用
+    const rest = (Array.isArray(s.chain) ? s.chain : []).filter((id) => id !== state.active);
+    $('#brainChain').textContent = [
+      rest.length ? `不能用時依序改用：${rest.map(brainName).join('、')}。` : '',
+      state.canAdmin ? '' : '只能看；要改設定請用管理者通行碼登入。',
+    ].join('');
+    notices(s);
+    chatgpt(s, enter);
+    live(s);
+    auth(s);
+  }
+
+  async function saveModel(field, value) {
+    try {
+      const s = await api('/api/chatgpt/config', { [field]: value });
+      toast('已更換模型', 'info', 2000);
+      if (Array.isArray(s?.providers)) applyStatus(s);
+      else refreshStatus();
+    } catch (err) {
+      toast(esc(err.message), 'error', 6000, '換模型失敗');
+      modelSig = ''; // 畫回原本的選擇
+      refreshStatus();
+    }
+  }
+
+  async function saveCloud() {
+    const btn = $('#btnCloudSave');
+    const cloudUrl = $('#cgCloudUrl').value.trim().replace(/\/+$/, '');
+    const syncKey = $('#cgSyncKey').value.trim();
+    const saved = !!state.status?.chatgpt?.cloud?.configured;
+    // 兩格都清空：取消雲端同步的設定
+    const clearing = !cloudUrl && !syncKey;
+    if (clearing && (!saved || !window.confirm('要清除雲端網址和同步密碼嗎？'))) {
+      if (!saved) $('#cgCloudUrl').focus();
+      return;
+    }
+    if (!clearing && !/^https?:\/\/[^\s/]+/i.test(cloudUrl)) {
+      toast('請填完整的雲端網址，例如 https://你的專案.vercel.app', 'warn', 4000);
+      $('#cgCloudUrl').focus();
+      return;
+    }
+    // 已經存過的同步密碼可以留空沿用
+    if (!clearing && !syncKey && !saved) {
+      toast('請填同步密碼（和 Vercel 的 CHATGPT_SYNC_KEY 一樣）', 'warn', 4000);
+      $('#cgSyncKey').focus();
+      return;
+    }
+    cloudBusy = true;
+    btn.disabled = true;
+    btn.textContent = '測試中…';
+    try {
+      await api('/api/chatgpt/cloud', { cloud_url: cloudUrl, sync_key: syncKey });
+      $('#cgSyncKey').value = ''; // 存好就清掉，不留在畫面上
+      urlEdited = false;
+      toast(clearing ? '已清除雲端設定' : '連上雲端了，接著按「登入並同步到雲端」', 'info', 4000);
+    } catch (err) {
+      toast(esc(err.message), 'error', 8000, '雲端測試沒過');
+    } finally {
+      cloudBusy = false;
+      btn.disabled = !state.canAdmin;
+      btn.textContent = '儲存並測試';
+      refreshStatus();
+    }
+  }
+
+  $('#brainSelect').addEventListener('change', (e) => setProvider(e.target.value));
+  $('#cgModel').addEventListener('change', (e) => saveModel('model', e.target.value));
+  $('#cgCoachModel').addEventListener('change', (e) => saveModel('coach_model', e.target.value));
+  $('#cgCloudUrl').addEventListener('input', () => { urlEdited = true; });
+  $('#btnCloudSave').addEventListener('click', saveCloud);
+  // 登入一律整頁跳轉：憑證只在伺服器之間傳，不經過這個網頁
+  $('#btnCloudSync').addEventListener('click', () => { location.href = '/auth/chatgpt/start?target=cloud'; });
+
+  $('#cgCard').addEventListener('click', async (e) => {
+    const b = e.target.closest('button[data-act]');
+    if (!b) return;
+    const act = b.dataset.act;
+    if (act === 'signin') { location.href = '/auth/chatgpt/start'; return; }
+    if (act === 'use') { setProvider('chatgpt'); return; }
+    const ask = act === 'clear'
+      ? `要清除雲端的 ChatGPT 憑證嗎？之後改用 ${backupName()}；要再用就到本機版重新同步。`
+      : `要登出 ChatGPT 嗎？之後改用 ${backupName()}。`;
+    if (!window.confirm(tidy(ask))) return;
+    b.disabled = true;
+    try {
+      const d = await api('/api/chatgpt/logout', {});
+      let msg = '已登出 ChatGPT';
+      if (act === 'clear') msg = '已清除雲端的 ChatGPT 憑證';
+      else if (d.remote_revoked === false) msg = '已登出。ChatGPT 那邊的授權可以到 ChatGPT 設定 → Security 移除';
+      toast(msg, 'info', 5000);
+      if (Array.isArray(d.status?.providers)) applyStatus(d.status);
+      else refreshStatus();
+    } catch (err) {
+      b.disabled = false;
+      toast(esc(err.message), 'error', 6000, act === 'clear' ? '清除失敗' : '登出失敗');
+    }
+  });
+
+  $('#liveSwitch').addEventListener('change', async (e) => {
+    const sw = e.target;
+    const on = sw.checked;
+    liveBusy = true;
+    sw.disabled = true;
+    try {
+      const s = await api('/api/live/config', { enabled: on });
+      toast(on ? '已開啟即時通話，下一通電話開始' : '已關閉即時通話', 'info', 2500);
+      liveBusy = false;
+      if (Array.isArray(s?.providers)) applyStatus(s);
+      else refreshStatus();
+    } catch (err) {
+      liveBusy = false;
+      sw.checked = !on;
+      toast(esc(err.message), 'error', 6000, '切換失敗');
+      refreshStatus();
+    }
+  });
+
+  $('#btnLogout').addEventListener('click', async () => {
+    try { await api('/api/logout', {}); } catch { /* 照樣回登入頁 */ }
+    location.href = '/login';
+  });
+
+  return { render };
+})();
+
+// ------------------------------------------------------------------ ChatGPT 登入回來
+
+// OpenAI 的規定：第一次用 ChatGPT 方案登入時說明一次，之後不再出現
+const WELCOME_KEY = 'aicoach.cgWelcomed';
+
+function showCgWelcome() {
+  try { if (localStorage.getItem(WELCOME_KEY)) return false; } catch { /* 讀不到就照樣說明 */ }
+  $('#cgWelcomeUsage').href = usageUrl();
+  $('#cgWelcome').classList.remove('hidden');
+  $('#app').inert = true;
+  $('#btnCgWelcomeOk').focus();
+  return true;
+}
+
+function closeCgWelcome() {
+  $('#cgWelcome').classList.add('hidden');
+  $('#app').inert = false;
+  try { localStorage.setItem(WELCOME_KEY, '1'); } catch { /* 存不了就下次再說一次 */ }
+}
+
+$('#btnCgWelcomeOk').addEventListener('click', closeCgWelcome);
+$('#cgWelcome').addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  e.preventDefault();
+  closeCgWelcome();
 });
+
+// 伺服器回的代碼換成看得懂的話；沒列到的直接顯示代碼
+const CG_REASON = {
+  denied: '你在 ChatGPT 的頁面按了取消',
+  no_plan: '這個帳號不能用 ChatGPT 方案（要 Plus 或 Pro）',
+  no_plan_scope: '這個帳號不能用 ChatGPT 方案（要 Plus 或 Pro）',
+  bad_state: '登入逾時或已經用過，請重新按一次',
+  state: '登入逾時或已經用過，請重新按一次',
+  expired: '登入逾時，請重新按一次',
+  no_code: 'ChatGPT 沒有回傳登入資料，請再試一次',
+  no_client_id: 'ChatGPT 沒有回傳登入資料，請再試一次',
+  client_mismatch: '登入資料對不上，請再試一次',
+  account_mismatch: '登入的帳號和原本的不同，請先登出再登入',
+  exchange_failed: '換取憑證失敗，請再試一次',
+  no_id_token: '身分驗證失敗，請再試一次',
+  bad_id_token: '身分驗證失敗，請再試一次',
+  network: '連不到 OpenAI，請檢查網路',
+  timeout: '連線逾時，請再試一次',
+  store: '憑證存不進去，請再試一次',
+  blocked: '這裡不能用 ChatGPT 登入',
+  synced: '雲端版不能直接登入：請在本機版按「登入並同步到雲端」',
+  local_only: '要在本機版（start.bat）按「登入並同步到雲端」',
+  no_server: '請用 start.bat 開啟再登入',
+  host: '請用 http://127.0.0.1 開啟再登入',
+  unsupported: '這個版本還不能同步到雲端',
+  cloud_not_set: '還沒填雲端網址和同步密碼',
+  bad_cloud_url: '雲端網址不對',
+  sync_off: '雲端還沒設定 CHATGPT_SYNC_KEY，或網址不對（記得 Redeploy）',
+  sync_key: '同步密碼不對：要和 Vercel 上的 CHATGPT_SYNC_KEY 一樣',
+  rate_limited: '試太多次了，請 10 分鐘後再試',
+  redirect: '雲端網址被轉址了：請貼瀏覽器網址列最後顯示的網址',
+  cloud: '雲端沒有收下憑證，請看「AI 大腦」裡的說明',
+  cloud_not_app: '這個網址不是對練教練的雲端版',
+  cloud_unreachable: '連不到雲端網站',
+  cloud_blocked: '雲端擋住了：請用正式網址（https://專案名.vercel.app），或關掉 Deployment Protection',
+  sync_failed: '雲端沒有收下憑證，請再試一次',
+  admin: '需要管理者通行碼才能同步到雲端',
+  host_mismatch: '這份登入不是給這個雲端網站的，請重新按「登入並同步到雲端」',
+  bad_client: '登入資料格式不對，請再試一次',
+  missing_fields: '登入資料不完整，請再試一次',
+  bad_request: '資料格式錯誤，請再試一次',
+  no_port: '請用 start.bat 開啟再登入',
+  bad_redirect: '請用 http://127.0.0.1 開啟再登入',
+  no_host_id: '拿不到雲端的主機代號，請先按「儲存並測試」',
+  bad_host_id: '雲端的主機代號不對，請先按「儲存並測試」',
+};
+
+// 從 ChatGPT 登入回來：網址帶 ?chatgpt=結果&reason=代碼，說明結果後把網址清乾淨
+function signInReturn() {
+  const q = new URLSearchParams(location.search);
+  const result = q.get('chatgpt');
+  if (!result) return;
+  const code = (q.get('reason') || '').replace(/[^\w.-]/g, '').slice(0, 40);
+  q.delete('chatgpt');
+  q.delete('reason');
+  const rest = q.toString();
+  history.replaceState(null, '', location.pathname + (rest ? `?${rest}` : '') + location.hash);
+  const why = code ? CG_REASON[code] || `代碼：${code}` : '請再試一次';
+  go('brain');
+  if (result === 'ok') {
+    if (!showCgWelcome()) toast('之後由你的 ChatGPT 方案回答。', 'info', 4000, '已登入 ChatGPT');
+  } else if (result === 'no_plan') {
+    toast(esc(tidy(`這個帳號沒有開放 ChatGPT 方案（要 Plus 或 Pro），先用 ${backupName()}。`)), 'warn', 8000, 'ChatGPT 方案不能用');
+  } else if (result === 'denied') {
+    toast('你取消了 ChatGPT 登入。', 'info', 4000);
+  } else if (result === 'synced') {
+    toast('雲端版現在用你的 ChatGPT 方案，之後由雲端自己續期。', 'info', 6000, '已同步到雲端');
+  } else if (result === 'sync_failed') {
+    toast(esc(why), 'error', 9000, '同步到雲端失敗');
+  } else {
+    toast(esc(why), 'error', 8000, 'ChatGPT 登入失敗');
+  }
+}
 
 // ------------------------------------------------------------------ 對練情境
 
@@ -376,6 +952,7 @@ const TTS_INFO = {
       '按「Create API key」建立金鑰',
       '把金鑰貼到下面，按「儲存」。免費版送出的內容 Google 會拿去改進產品，公司正式使用請先開啟付費',
     ],
+    note: '免費版送出的內容 Google 會拿去改進產品，公司正式使用請先開啟付費。',
   },
   yating: {
     desc: '台灣廠商（台灣人工智慧實驗室），道地台灣口音，另有台語聲音。',
@@ -389,6 +966,24 @@ const TTS_INFO = {
   browser: { desc: '免費、不用設定，但聽起來像在念稿。', meta: '免費', steps: [] },
 };
 const AGE_LABEL = { young: '年輕', middle_aged: '中年', old: '年長' };
+const KEY_ENV = { elevenlabs: 'ELEVENLABS_API_KEY', gemini: 'GEMINI_API_KEY', yating: 'YATING_API_KEY' };
+
+// 雲端版的金鑰放在 Vercel 環境變數：網頁上不能貼，改成告訴他去哪裡設定
+function keyFromEnv(t, pid) {
+  const src = t.key_source;
+  return src === 'env' || (!!src && typeof src === 'object' && src[pid] === 'env');
+}
+
+function keySteps(t, pid) {
+  const info = TTS_INFO[pid];
+  if (!keyFromEnv(t, pid)) return info.steps;
+  const name = t.env_names?.[pid] || KEY_ENV[pid] || 'API 金鑰';
+  return [
+    ...info.steps.slice(0, -1),
+    `到 Vercel 專案 → Settings → Environment Variables，新增 <code>${esc(name)}</code>，值貼上金鑰`,
+    '到 Deployments → 最新一筆右邊的「⋯」→ Redeploy，完成後重新整理這一頁',
+  ];
+}
 
 let preview = null;
 
@@ -436,7 +1031,7 @@ async function loadTts() {
 async function renderVoices() {
   const t = await loadTts();
   if (!t) {
-    $('#voiceCustomers').innerHTML = '<p class="notice">讀不到語音設定，請重新執行 start.bat</p>';
+    $('#voiceCustomers').innerHTML = `<p class="notice">${state.hosted ? '讀不到語音設定，請重新整理這一頁' : '讀不到語音設定，請重新執行 start.bat'}</p>`;
     return;
   }
   const current = t.providers.find((p) => p.id === t.provider);
@@ -457,7 +1052,14 @@ async function renderVoices() {
   const selected = t.providers.find((p) => p.id === t.selected) || current;
   const needKey = selected.id !== 'browser' && !selected.configured;
   $('#keyBox').classList.toggle('hidden', !needKey);
-  if (needKey) $('#keySteps').innerHTML = TTS_INFO[selected.id].steps.map((s) => `<li>${s}</li>`).join('');
+  if (needKey) {
+    const env = keyFromEnv(t, selected.id);
+    $('#keySteps').innerHTML = keySteps(t, selected.id).map((s) => `<li>${s}</li>`).join('');
+    $('#keyRow').classList.toggle('hidden', env);
+    $('#keyNote').textContent = env
+      ? `雲端版的金鑰只放在 Vercel 的環境變數，網頁上不能貼。${TTS_INFO[selected.id].note || ''}`
+      : '金鑰只會存在這台電腦的 .env 檔案裡，不會上傳到別的地方。';
+  }
 
   $('#modelRow').classList.toggle('hidden', !t.models.length);
   $('#ttsModel').innerHTML = t.models.map((m) => `<option value="${esc(m.id)}"${m.id === t.model ? ' selected' : ''}>${esc(m.label)}</option>`).join('');
@@ -591,7 +1193,8 @@ $('#btnSaveKey').addEventListener('click', async () => {
     toast('金鑰已儲存', 'info', 2500);
     renderVoices();
   } catch (err) {
-    toast(esc(err.message), 'error', 6000, '儲存失敗');
+    toast(esc(err.message), 'error', 8000, '儲存失敗');
+    if (err.data?.env_name) renderVoices(); // 雲端版：改顯示 Vercel 的設定步驟
   }
 });
 
@@ -2739,9 +3342,10 @@ function beginSession() {
   const s = state.scenario;
   Object.assign(state, {
     messages: [], checklist: {}, alerts: [], ended: false, startedAt: Date.now(), partial: null,
-    repTurn: 0, coach: newCoach(), evalPending: false,
+    repTurn: 0, coach: newCoach(), evalPending: false, fallbackNoted: false,
   });
   state.hitWords.clear();
+  updatePlanTag();
   newestAlert = null;
   setCoachBusy(0);
   state.trust = s.initial_trust ?? 45;
@@ -2948,6 +3552,7 @@ async function streamCustomer() {
         if (!line) continue;
         const data = JSON.parse(line.slice(5));
         if (data.error) throw new Error(data.error);
+        if (data.fallback && data.brain) noteFallback(data.label, data.brain); // 主要大腦不能用，這句由備援回答
         if (!data.delta) continue;
         partial.text += data.delta;
         setBubbleText(bubble, cleanReply(partial.text));
@@ -2988,7 +3593,7 @@ async function streamCustomer() {
     if (state.chatCtrl === ctrl) state.chatCtrl = null;
     Speech.cancel();
     setCustomerState('idle');
-    toast(esc(err.name === 'TypeError' ? OFFLINE : err.message), 'error', 7000, '客戶沒有回應');
+    toast(esc(err.name === 'TypeError' ? offline() : err.message), 'error', 7000, '客戶沒有回應');
   }
 }
 
@@ -3143,6 +3748,7 @@ async function endSession() {
       messages: ctx.messages,
     }, ...loadHistory()]);
     renderReport(report, ctx);
+    if (report.fallback) toast(esc(tidy(`${brainName(state.provider)} 暫時不能用，這次評分改用 ${shortLabel(report.model) || brainName(report.brain)}`)), 'warn', 6000);
   } catch (err) {
     clearInterval(stepTimer);
     state.evalBusy = false;
@@ -3327,11 +3933,14 @@ async function init() {
     $('#scenarioGrid').innerHTML = `<p class="notice">讀不到情境：${esc(err.message)}</p>`;
   }
   envHint();
-  refreshStatus();
-  setInterval(refreshStatus, 6000);
+  hostedCopy();
+  const first = refreshStatus();
   api('/api/warmup', {}).catch(() => {});
   api('/api/profile').then((d) => { state.rep = d.effective || null; }).catch(() => {});
   loadTts();
+  await first;
+  pollStatus();
+  signInReturn();
 }
 
 init();

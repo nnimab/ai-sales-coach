@@ -1,0 +1,11 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "python",
+  "regions": ["hnd1"],
+  "functions": {
+    "app.py": {
+      "maxDuration": 300,
+      "includeFiles": "{web/**,scenarios/*.json}"
+    }
+  }
+}

@@ -84,6 +84,7 @@ const ICONS = {
   play: '<path d="M6 4.5v15a1 1 0 0 0 1.5.86l12.5-7.5a1 1 0 0 0 0-1.72L7.5 3.64A1 1 0 0 0 6 4.5z"/>',
   stop: '<rect x="6" y="6" width="12" height="12" rx="2"/>',
   volume: '<path d="M11 4.702a.705.705 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.705.705 0 0 0 11 19.298z"/><path d="M16 9a5 5 0 0 1 0 6"/><path d="M19.364 18.364a9 9 0 0 0 0-12.728"/>',
+  volumeX: '<path d="M11 4.702a.705.705 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.705.705 0 0 0 11 19.298z"/><path d="m22 9-6 6"/><path d="m16 9 6 6"/>',
   edit: '<path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505l-2.873.84a.5.5 0 0 1-.62-.62l.84-2.873a2 2 0 0 1 .506-.852z"/>',
   plus: '<path d="M5 12h14"/><path d="M12 5v14"/>',
   arrowUp: '<path d="m5 12 7-7 7 7"/><path d="M12 19V5"/>',
@@ -2194,6 +2195,7 @@ const BrowserVoice = (() => {
     // 調音高會讓瀏覽器語音更不自然，只保留些微語速差異
     u.rate = Math.min(1.08, Math.max(0.95, profile.rate || 1));
     u.pitch = 1;
+    u.volume = Speaker.off ? 0 : 1; // 已經在念的那句改不了，下一句開始照喇叭的開關
     showVoiceName();
     const myGen = gen;
     let finished = false;
@@ -2211,7 +2213,6 @@ const BrowserVoice = (() => {
     u.onstart = () => {
       if (myGen !== gen) return;
       setCustomerState('speaking');
-      setCaption(t);
     };
     u.onend = finish;
     u.onerror = finish;
@@ -2241,6 +2242,7 @@ const BrowserVoice = (() => {
       const u = new SpeechSynthesisUtterance(t);
       u.lang = voice ? voice.lang : 'zh-TW';
       if (voice) u.voice = voice;
+      u.volume = Speaker.off ? 0 : 1;
       live.add(u);
       const done = () => { clearTimeout(guard); live.delete(u); resolve(); };
       const guard = setTimeout(done, 3000 + t.length * 400);
@@ -2283,6 +2285,37 @@ function animateMouth(analyser) {
   };
 }
 
+// 通話畫面右邊的「喇叭」：只關掉客戶的聲音。聲音最後都經過這裡的音量節點，嘴型和光暈照樣跟著聲音動
+const Speaker = (() => {
+  let off = false;
+  const outs = new Set();
+
+  // 接在分析器後面、喇叭前面
+  function out(ctx) {
+    const g = ctx.createGain();
+    g.gain.value = off ? 0 : 1;
+    g.connect(ctx.destination);
+    outs.add(g);
+    return g;
+  }
+
+  function set(v) {
+    off = !!v;
+    outs.forEach((g) => { g.gain.value = off ? 0 : 1; });
+    LiveCall.speaker(off);
+    const b = $('#btnSpeaker');
+    b.classList.toggle('off', off);
+    b.setAttribute('aria-pressed', String(off));
+    $('.rail-label', b).textContent = off ? '靜音' : '喇叭';
+    const ic = $('.ic', b);
+    if (ic) ic.outerHTML = icon(off ? 'volumeX' : 'volume');
+  }
+
+  $('#btnSpeaker').addEventListener('click', () => set(!off));
+
+  return { out, set, get off() { return off; } };
+})();
+
 // ------------------------------------------------------------------ 客戶語音：付費 AI 語音（ElevenLabs／Gemini／雅婷）
 
 const ServerVoice = (() => {
@@ -2307,7 +2340,7 @@ const ServerVoice = (() => {
         analyser = ctx.createAnalyser();
         analyser.fftSize = 1024;
         src.connect(analyser);
-        analyser.connect(ctx.destination);
+        analyser.connect(Speaker.out(ctx));
       }
       if (ctx.state === 'suspended') ctx.resume();
     } catch {
@@ -2378,7 +2411,6 @@ const ServerVoice = (() => {
     if (!blob) {
       if (item.error) onError(item.error); // 響鈴時先準備的那段失敗，接通後才告訴使用者
       setCustomerState('speaking');
-      setCaption(item.text);
       $('#avatarStage').classList.remove('audio-live');
       await BrowserVoice.speakOnce(item.text);
       if (myGen !== gen) return;
@@ -2402,7 +2434,6 @@ const ServerVoice = (() => {
     }
     if (myGen !== gen) return;
     setCustomerState('speaking');
-    setCaption(item.text);
     showVoiceName();
     startMouth();
   }
@@ -2533,12 +2564,119 @@ function setMicUi(mode) {
   st.classList.toggle('muted', mode === 'muted');
 }
 
-// 通話畫面中間的即時字幕：顯示客戶正在說的那一句
-function setCaption(text, past = false) {
-  const el = $('#caption');
-  if (text !== undefined) el.textContent = text;
-  el.classList.toggle('past', past);
-}
+// ------------------------------------------------------------------ 通話畫面的客戶：真人影像 > 本機的底片或照片（face/）> 畫的頭像
+
+const Stage = (() => {
+  const found = new Map(); // 頭像代號 → 這台伺服器的 face/ 有什麼 { clip, photo }（雲端沒有這個資料夾）
+  const NONE = { clip: '', photo: '' };
+  let media = NONE;
+  let faceEl = null;
+  let gen = 0;
+
+  // 只看有沒有、是不是影片或圖片（雲端要登入時會被轉到登入頁，那不算）；拿 1 個位元組就好
+  async function exists(url, kind) {
+    try {
+      const r = await fetch(url, { headers: { Range: 'bytes=0-0' }, cache: 'no-store' });
+      return r.ok && (r.headers.get('Content-Type') || '').startsWith(kind);
+    } catch {
+      return false;
+    }
+  }
+
+  function probe(avatar) {
+    if (!/^[a-z][a-z0-9-]{0,31}$/.test(avatar || '')) return Promise.resolve(NONE);
+    if (!found.has(avatar)) {
+      const clip = `/face/${avatar}_idle.mp4`;
+      const photo = (async () => {
+        for (const ext of ['webp', 'jpg', 'png']) {
+          const url = `/face/${avatar}.${ext}`;
+          if (await exists(url, 'image/')) return url;
+        }
+        return '';
+      })();
+      found.set(avatar, Promise.all([exists(clip, 'video/').then((ok) => (ok ? clip : '')), photo])
+        .then(([c, p]) => ({ clip: c, photo: p })));
+    }
+    return found.get(avatar);
+  }
+
+  // 接通時換上這位客戶；底片和照片還在確認時先不顯示畫的頭像，免得閃一下又換掉
+  function set(avatar) {
+    const my = ++gen;
+    faceEl = null;
+    media = NONE;
+    const stage = $('#avatarStage');
+    stage.classList.remove('face', 'has-clip', 'has-photo');
+    stage.classList.add('probing');
+    $('#stageMedia').replaceChildren();
+    $('#avatarBox').innerHTML = avatarSVG(avatar);
+    const shown = () => { if (my === gen) stage.classList.remove('probing'); };
+    const cap = setTimeout(shown, 1500);
+    probe(avatar).then((f) => {
+      if (my !== gen) return;
+      clearTimeout(cap);
+      media = f;
+      if (!faceEl) local();
+      shown();
+    });
+  }
+
+  function local() {
+    const stage = $('#avatarStage');
+    const box = $('#stageMedia');
+    stage.classList.toggle('has-clip', !!media.clip);
+    stage.classList.toggle('has-photo', !media.clip && !!media.photo);
+    if (media.clip) {
+      const v = Object.assign(document.createElement('video'), { muted: true, loop: true, autoplay: true, playsInline: true });
+      v.setAttribute('aria-hidden', 'true');
+      if (media.photo) v.poster = media.photo;
+      v.addEventListener('error', () => {
+        if (!box.contains(v)) return;
+        media = { ...media, clip: '' }; // 影片放不了：改用照片，再不行就用畫的
+        local();
+      }, { once: true });
+      v.src = media.clip;
+      box.replaceChildren(v);
+      v.play().catch(() => {});
+      return;
+    }
+    if (media.photo) {
+      const img = Object.assign(document.createElement('img'), { alt: '', src: media.photo });
+      img.addEventListener('error', () => {
+        if (!box.contains(img)) return;
+        media = NONE;
+        local();
+      }, { once: true });
+      box.replaceChildren(img);
+      return;
+    }
+    box.replaceChildren();
+  }
+
+  // 真人模式的影像（同一個 <video> 搬進來）；收掉時換回本機的底片、照片或畫的頭像
+  function face(el) {
+    const stage = $('#avatarStage');
+    if (el) {
+      faceEl = el;
+      stage.classList.remove('has-clip', 'has-photo', 'probing');
+      stage.classList.add('face');
+      $('#stageMedia').replaceChildren(el);
+      return;
+    }
+    if (!faceEl) return;
+    faceEl = null;
+    stage.classList.remove('face');
+    local();
+  }
+
+  // 通話結束：底片停在這一格，不用一直播
+  function pause() {
+    const v = $('#stageMedia > video');
+    if (v && !faceEl) v.pause();
+  }
+
+  return { probe, set, face, pause };
+})();
 
 // ------------------------------------------------------------------ 業務語音（瀏覽器內建語音辨識）
 
@@ -2676,7 +2814,10 @@ const Mic = (() => {
   return { start, stop, toggle, supported: () => !!SR, get active() { return active; } };
 })();
 
-function showInterim(text) { $('#interim').textContent = text; }
+// 業務正在講的那句（字幕串最下面）：太長只留最後幾行
+function showInterim(text) {
+  $('#interim').innerHTML = text ? `<div class="clip"><div><span class="who">你</span>${esc(text)}</div></div>` : '';
+}
 
 // ------------------------------------------------------------------ 即時語音通話（Gemini Live）：聽、想、講一次包辦，業務可以隨時插話
 
@@ -2750,6 +2891,7 @@ const LiveCall = (() => {
   let face = null;
   let faceOn = false;
   let faceVideo = null;
+  let faceAudio = null; // 真人的聲音（LiveKit 傳回來的），喇叭關掉時一起靜音
   let faceMood = null; // 自架真人的表情跟著信任度換（HeyGen 沒有表情）
   let quietTimer = 0; // 萬一沒收到真人「講完了」，估計的時間到了也換成在聽
 
@@ -2831,8 +2973,13 @@ const LiveCall = (() => {
     faceVideo = Object.assign(document.createElement('video'), { autoplay: true, playsInline: true, muted: true });
     faceVideo.className = 'face-video';
     // 真人的聲音只從 LiveKit 來：放進頁面（看不到）比較不會被瀏覽器省略，收掉時一起拿走
-    const audio = Object.assign(document.createElement('audio'), { autoplay: true, hidden: true });
+    const audio = Object.assign(document.createElement('audio'), { autoplay: true, hidden: true, muted: Speaker.off });
+    // LiveKit 接上聲音時可能重設 muted：每次開始播都照喇叭的開關再設一次
+    const keepMute = () => { audio.muted = Speaker.off; };
+    audio.addEventListener('loadedmetadata', keepMute);
+    audio.addEventListener('playing', keepMute);
     document.body.appendChild(audio);
+    faceAudio = audio;
     faceMood = FaceMood.tracker(s.customer);
     faceMood.update(s.initial_trust ?? 45);
     face = FaceLink.open({
@@ -2848,14 +2995,9 @@ const LiveCall = (() => {
     if (e) face.setExpression(e);
   }
 
-  // 通話畫面中間：真人影像換掉畫的頭像；收掉時換回來
+  // 通話畫面：真人影像佔滿舞台；收掉時換回本機的底片、照片或畫的頭像
   function showFace(on) {
-    const stage = $('#avatarStage');
-    if (on === stage.classList.contains('face')) return;
-    stage.classList.toggle('face', on);
-    const box = $('#avatarBox');
-    if (on) box.replaceChildren(faceVideo);
-    else if (state.scenario) box.innerHTML = avatarSVG(state.scenario.customer.avatar);
+    Stage.face(on ? faceVideo : null);
   }
 
   // 真人連不上或中途斷了：這通電話照常講，客戶的聲音改回這裡自己播
@@ -2887,10 +3029,7 @@ const LiveCall = (() => {
 
   // 和自己播的時候一樣：真人講完、客戶也沒有下一句，就換成「在聽你說」
   function faceEnded() {
-    if (!cust && active && faceOn && !face.busy) {
-      setCustomerState('listening');
-      setCaption(undefined, true);
-    }
+    if (!cust && active && faceOn && !face.busy) setCustomerState('listening');
   }
 
   // Gemini 這一輪講完：剩下的聲音送給真人、封口
@@ -2900,10 +3039,7 @@ const LiveCall = (() => {
     const left = c ? (c.start ? c.end - clock() : c.sent / FaceAudio.BYTES_PER_SEC) : 0;
     clearTimeout(quietTimer);
     quietTimer = setTimeout(() => {
-      if (!cust && active && faceOn) {
-        setCustomerState('listening');
-        setCaption(undefined, true);
-      }
+      if (!cust && active && faceOn) setCustomerState('listening');
     }, (Math.max(0, left) + 2) * 1000);
   }
 
@@ -3065,7 +3201,6 @@ const LiveCall = (() => {
     const c = custTurn();
     c.text += t;
     setBubbleText(c.el, liveText(c.text));
-    setCaption(liveText(c.text));
   }
 
   function custDone(interrupted) {
@@ -3083,7 +3218,6 @@ const LiveCall = (() => {
     if (text) {
       state.messages.push({ role: 'customer', text });
       setBubbleText(c.el, text);
-      setCaption(text);
     } else {
       c.el.remove();
       updateTurnCount();
@@ -3125,7 +3259,7 @@ const LiveCall = (() => {
       const ctx = new (window.AudioContext || window.webkitAudioContext)();
       const analyser = ctx.createAnalyser();
       analyser.fftSize = 1024;
-      analyser.connect(ctx.destination);
+      analyser.connect(Speaker.out(ctx));
       out = { ctx, analyser };
     }
     if (out.ctx.state === 'suspended') out.ctx.resume();
@@ -3166,10 +3300,7 @@ const LiveCall = (() => {
       sources = sources.filter((x) => x !== src);
       if (sources.length) return;
       stopMouth();
-      if (!cust && active) {
-        setCustomerState('listening');
-        setCaption(undefined, true);
-      }
+      if (!cust && active) setCustomerState('listening');
     };
     if (!stopMouthLoop) stopMouthLoop = animateMouth(out.analyser);
   }
@@ -3310,6 +3441,7 @@ const LiveCall = (() => {
     face = null;
     faceOn = false;
     faceMood = null;
+    faceAudio = null; // FaceLink 收掉時會把它從頁面拿走
     showFace(false);
     stopMic();
     const sock = ws;
@@ -3328,8 +3460,13 @@ const LiveCall = (() => {
     return face.name ? ` · 真人 ${face.name}` : '';
   }
 
+  // 喇叭開關：真人的聲音跟著靜音（自己播的聲音由 Speaker 的音量節點處理）
+  function speaker(off) {
+    if (faceAudio) faceAudio.muted = off;
+  }
+
   return {
-    prepare, start, stop, toggleMute, mood,
+    prepare, start, stop, toggleMute, mood, speaker,
     send: sendText,
     get voiceName() { return `Gemini Live · ${voice || '預設聲音'}${faceTag()}`; },
   };
@@ -3432,6 +3569,111 @@ function updateTurnCount() {
   $('#turnCount').textContent = String($('#transcript').children.length || '');
 }
 
+// 畫面左下的字幕串（像直播的留言）：最近幾句對話，夾著教練提示和合規警示，舊的往上淡出。
+// 對話直接看逐字稿的變化來更新（客戶正在講的那句會在原地長出來）；提示接在當下最後一句後面，
+// 合規警示接在它說的那句業務的話後面。點對話打開完整逐字稿，點提示或警示打開教練面板
+const Feed = (() => {
+  const MAX = 6;
+  const rows = new WeakMap(); // 逐字稿的泡泡 → 字幕串的那一行
+  const repEls = new Map(); // 業務的第幾句 → 它的泡泡（合規警示要接在後面）
+  let notes = []; // { kind: 'tip'|'alert', el, after: 泡泡｜null（最前面）, pending: 還在講、泡泡還沒出來 }
+
+  function reset() {
+    notes = [];
+    repEls.clear();
+    render();
+  }
+
+  // after：不給＝接在現在最後一句後面；'pending'＝業務還在講，等那句出來再接上；泡泡＝接在那句後面
+  function add(kind, text, after) {
+    const box = $('#transcript');
+    const el = document.createElement('div');
+    el.className = `feed-item note ${kind}`;
+    const label = kind === 'alert' ? `${icon('alert')}合規` : `${icon('bulb')}教練`;
+    el.innerHTML = `<div class="clip"><div><span class="who">${label}</span><span class="txt">${esc(text)}</span></div></div>`;
+    const pending = after === 'pending';
+    notes.push({ kind, el, pending, after: pending ? null : after === undefined ? box.lastElementChild : after });
+    render();
+  }
+
+  // 業務那句定案了：還在等的合規警示接到這句後面
+  function claim(el) {
+    notes.forEach((n) => {
+      if (!n.pending) return;
+      n.pending = false;
+      n.after = el;
+    });
+  }
+
+  // 業務的泡泡（即時對話的逐字稿補字時會換成新的）
+  function bind(turn, el, old = null) {
+    repEls.set(turn, el);
+    if (old) notes.forEach((n) => { if (n.after === old) n.after = el; });
+  }
+
+  function row(m) {
+    let el = rows.get(m);
+    if (!el) {
+      el = document.createElement('div');
+      rows.set(m, el);
+    }
+    const rep = m.classList.contains('rep');
+    el.className = `feed-item ${rep ? 'rep' : 'customer'}${m.classList.contains('flagged') ? ' flagged' : ''}`;
+    // 泡泡裡的字已經跳脫過（禁語的 <mark> 和「…」的點點照樣帶過來）
+    const who = rep ? '你' : esc(state.scenario?.customer.name || '客戶');
+    const html = `<div class="clip"><div><span class="who">${who}</span><span class="txt">${m.querySelector('.txt')?.innerHTML ?? ''}</span></div></div>`;
+    if (el.cached !== html) {
+      el.innerHTML = html;
+      el.cached = html;
+    }
+    return el;
+  }
+
+  function render() {
+    const list = $('#feedList');
+    const exam = state.mode === 'exam'; // 考核：提示和警示一律不顯示
+    const shown = (n) => !exam && !n.pending;
+    const msgs = [...$('#transcript').children];
+    const tail = msgs.slice(-MAX);
+    const seq = msgs.length <= MAX ? notes.filter((n) => shown(n) && n.after === null).map((n) => n.el) : [];
+    tail.forEach((m) => {
+      seq.push(row(m));
+      notes.forEach((n) => { if (shown(n) && n.after === m) seq.push(n.el); });
+    });
+    if (!exam) notes.forEach((n) => { if (n.pending) seq.push(n.el); });
+    const want = seq.slice(-MAX);
+    // 已經在畫面上的不搬動（搬動會重播滑入動畫），只拿掉舊的、把新的插到對的位置
+    const keep = new Set(want);
+    [...list.children].forEach((el) => { if (!keep.has(el)) el.remove(); });
+    want.forEach((el, i) => {
+      if (el.parentNode === list) return;
+      const next = want.slice(i + 1).find((x) => x.parentNode === list);
+      list.insertBefore(el, next || null);
+    });
+    want.forEach((el, i) => el.style.setProperty('--age', String(want.length - 1 - i)));
+    // 放不下時，最上面那句淡出去
+    const feed = $('#liveFeed');
+    feed.classList.toggle('clipped', list.getBoundingClientRect().top < feed.getBoundingClientRect().top - 1);
+  }
+
+  // 同一輪的變化會合併成一次通知；不用 requestAnimationFrame，分頁在背景時也會跟上。
+  // 泡泡被拿掉（例如客戶那句是空的）：接在它後面的提示改接到前一句
+  new MutationObserver((records) => {
+    records.forEach((r) => r.removedNodes.forEach((node) => {
+      if (node.isConnected) return; // 只是換位置
+      const prev = r.previousSibling?.isConnected ? r.previousSibling : null;
+      notes.forEach((n) => { if (n.after === node) n.after = prev; });
+    }));
+    render();
+  }).observe($('#transcript'), { childList: true, subtree: true, characterData: true });
+  $('#liveFeed').addEventListener('click', (e) => {
+    if (!e.target.closest('.feed-item, .interim')) return;
+    Sheet.open(e.target.closest('.note') ? 'coach' : 'transcript');
+  });
+
+  return { reset, add, claim, bind, render, rep: (turn) => repEls.get(turn) || null };
+})();
+
 // ------------------------------------------------------------------ 教練面板
 
 function renderChecklist(newly = []) {
@@ -3441,6 +3683,14 @@ function renderChecklist(newly = []) {
     `<li class="${state.checklist[c.id] ? 'done' : ''}${newly.includes(c.id) ? ' pop' : ''}" title="${esc(c.hint || '')}"><span class="ck">${icon('check')}</span>${esc(c.label)}</li>`).join('');
   $('#checkCount').textContent = `${done} / ${items.length}`;
   $('#checkBar').style.width = `${items.length ? (done / items.length) * 100 : 0}%`;
+  railCheckLabel();
+}
+
+// 右邊「清單」按鈕上的進度；考核時不透露
+function railCheckLabel() {
+  const items = state.scenario?.checklist || [];
+  const done = items.filter((c) => state.checklist[c.id]).length;
+  $('#railCheckLabel').textContent = items.length && state.mode !== 'exam' ? `${done}/${items.length}` : '清單';
 }
 
 let newestAlert = null;
@@ -3484,25 +3734,207 @@ function addAlert(quote, issue, source) {
   return true;
 }
 
-let tipTimer = 0;
-function setTip(text) {
-  const t = String(text ?? '').trim();
-  const p = $('#tipText');
-  if (!t || t === p.textContent) return;
-  p.textContent = t;
-  const card = $('#tipCard');
-  card.classList.remove('fresh');
-  void card.offsetWidth; // 重新觸發外框亮一下
-  card.classList.add('fresh');
-  clearTimeout(tipTimer);
-  tipTimer = setTimeout(() => card.classList.remove('fresh'), 2500);
+// 教練提示和合規警示：出現在左下的字幕串裡，也全部記在面板的「教練提示」裡。
+// 面板沒開在教練那頁時，右邊的「教練」按鈕顯示幾則沒看過
+const Tips = (() => {
+  let log = [];
+  let unread = 0;
+  let unreadAlert = false;
+  let last = '';
+
+  function reset() {
+    log = [];
+    unread = 0;
+    unreadAlert = false;
+    last = '';
+    Feed.reset();
+    render();
+    badge();
+  }
+
+  // text 是純文字（這裡會跳脫）；after 見 Feed.add
+  function push(kind, text, title, after) {
+    const secs = Math.max(0, Math.floor((Date.now() - state.startedAt) / 1000));
+    log.push({ kind, text, title, secs });
+    render();
+    Feed.add(kind, text, after);
+    $('#tipLive').textContent = `${title}：${text}`; // 給報讀軟體
+    if (!Sheet.showing('coach')) {
+      unread += 1;
+      unreadAlert = unreadAlert || kind === 'alert';
+    }
+    badge();
+  }
+
+  // 提示接在它看的那句業務的話後面（找不到就接在最後）
+  function tip(text, after) {
+    const t = String(text ?? '').trim();
+    if (!t || t === last) return;
+    last = t;
+    push('tip', t, '教練提示', after);
+  }
+
+  function alert(text, title, after) {
+    push('alert', text, title, after);
+  }
+
+  function seen() {
+    unread = 0;
+    unreadAlert = false;
+    badge();
+  }
+
+  function badge() {
+    const b = $('#coachBadge');
+    b.textContent = unread ? String(Math.min(unread, 99)) : '';
+    b.classList.toggle('alert', unreadAlert);
+    $('#railCoach').setAttribute('aria-label', unread ? `教練，${unread} 則新提示` : '教練');
+  }
+
+  function render() {
+    $('#tipCount').textContent = log.length ? `${log.length} 則` : '';
+    $('#coachLog').innerHTML = log.length ? log.slice().reverse().map((x) =>
+      `<li class="${x.kind}">${icon(x.kind === 'alert' ? 'alert' : 'bulb')}<div><small>${mmss(x.secs)} · ${esc(x.title)}</small>${esc(x.text)}</div></li>`).join('')
+      : '<li class="empty">教練的提示會出現在這裡</li>';
+  }
+
+  return { reset, tip, alert, seen };
+})();
+
+function setTip(text, after) {
+  Tips.tip(text, after);
 }
 
-// 教練正在看幾輪：大於 0 時提示卡顯示「分析中…」
+// 教練正在看幾輪：大於 0 時右邊的「教練」按鈕外圈會轉
 function setCoachBusy(d) {
   state.coachBusy = d === 0 ? 0 : Math.max(0, state.coachBusy + d);
-  $('#tipCard').classList.toggle('pending', state.coachBusy > 0);
+  $('#railCoach').classList.toggle('busy', state.coachBusy > 0);
 }
+
+// 面板：教練（提示紀錄、檢核清單、合規警示）和逐字稿。手機從下面拉上來，桌機固定在右邊、可以收起來（記住開或關）
+const Sheet = (() => {
+  const KEY = 'aicoach.callPanel';
+  const wide = window.matchMedia('(min-width: 900px)');
+  const root = $('#callRoot');
+  const sheet = $('#coachPanel');
+  let tab = 'coach';
+  let opener = null;
+
+  const isOpen = () => root.classList.contains('sheet-open');
+  const showing = (t) => isOpen() && tab === t;
+
+  function select(t) {
+    tab = t;
+    $$('.sheet-tabs [role="tab"]').forEach((b) => {
+      const on = b.dataset.tab === t;
+      b.classList.toggle('on', on);
+      b.setAttribute('aria-selected', String(on));
+      b.tabIndex = on ? 0 : -1;
+    });
+    $$('.sheet-pane').forEach((p) => { p.hidden = p.dataset.pane !== t; });
+    if (t === 'transcript') {
+      const box = $('#transcript');
+      box.scrollTop = box.scrollHeight;
+    }
+    sync();
+  }
+
+  // 右邊按鈕的亮暗跟著面板；教練那頁開著就算看過了
+  function sync() {
+    const open = isOpen();
+    if (open && tab === 'coach') Tips.seen();
+    $$('.rail-btn[data-sheet]').forEach((b) => {
+      const t = b.dataset.sheet === 'transcript' ? 'transcript' : 'coach';
+      b.setAttribute('aria-expanded', String(open && tab === t));
+      b.classList.toggle('on', open && tab === t && b.dataset.sheet !== 'check');
+    });
+    document.body.classList.toggle('call-panel', open && wide.matches);
+  }
+
+  function remember() {
+    if (!wide.matches) return;
+    try { localStorage.setItem(KEY, isOpen() ? tab : ''); } catch { /* 存不了就只記這次 */ }
+  }
+
+  function open(t) {
+    if (!isOpen()) opener = document.activeElement;
+    root.classList.add('sheet-open');
+    select(t === 'check' ? 'coach' : t);
+    if (t === 'check') $('#paneCoach').scrollTop = $('#checkSec').offsetTop - 8;
+    remember();
+    if (!wide.matches) $('#btnSheetClose').focus({ preventScroll: true });
+  }
+
+  function close() {
+    if (!isOpen()) return;
+    root.classList.remove('sheet-open');
+    sheet.style.removeProperty('--drag');
+    sync();
+    remember();
+    const back = opener;
+    opener = null;
+    if (!wide.matches && back?.isConnected && back.offsetParent !== null) back.focus({ preventScroll: true });
+  }
+
+  // 每通電話開始：手機一律收著；桌機照上次（第一次用：夠寬就打開）
+  function reset() {
+    let saved = null;
+    try { saved = localStorage.getItem(KEY); } catch { /* 讀不到就用預設 */ }
+    const want = wide.matches ? (saved === null ? (window.innerWidth >= 1200 ? 'coach' : '') : saved) : '';
+    root.classList.toggle('sheet-open', !!want);
+    sheet.style.removeProperty('--drag');
+    $('#paneCoach').scrollTop = 0;
+    select(want === 'transcript' ? 'transcript' : 'coach');
+  }
+
+  $$('.rail-btn[data-sheet]').forEach((b) => b.addEventListener('click', () => {
+    const t = b.dataset.sheet;
+    if (t !== 'check' && showing(t)) close();
+    else open(t);
+  }));
+  $$('.sheet-tabs [role="tab"]').forEach((b) => b.addEventListener('click', () => {
+    select(b.dataset.tab);
+    remember();
+  }));
+  $('.sheet-tabs').addEventListener('keydown', (e) => {
+    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+    const next = tab === 'coach' ? 'transcript' : 'coach';
+    select(next);
+    remember();
+    $(`.sheet-tabs [data-tab="${next}"]`).focus();
+  });
+  $('#btnSheetClose').addEventListener('click', close);
+  $('#sheetBackdrop').addEventListener('click', close);
+  wide.addEventListener('change', () => {
+    // 從桌機縮成手機寬：不要突然蓋住畫面
+    if (!wide.matches) root.classList.remove('sheet-open');
+    sync();
+  });
+
+  // 手機：拉著上面的小橫條往下拖就收起來
+  const grip = $('#sheetGrip');
+  let y0 = null;
+  grip.addEventListener('pointerdown', (e) => {
+    y0 = e.clientY;
+    grip.setPointerCapture(e.pointerId);
+    sheet.classList.add('dragging');
+  });
+  grip.addEventListener('pointermove', (e) => {
+    if (y0 !== null) sheet.style.setProperty('--drag', `${Math.max(0, e.clientY - y0)}px`);
+  });
+  const drop = (e) => {
+    if (y0 === null) return;
+    const dy = e.clientY - y0;
+    y0 = null;
+    sheet.classList.remove('dragging');
+    sheet.style.removeProperty('--drag');
+    if (dy > 80) close();
+  };
+  grip.addEventListener('pointerup', drop);
+  grip.addEventListener('pointercancel', drop);
+
+  return { open, close, reset, showing, get isOpen() { return isOpen(); } };
+})();
 
 function abortCoach() {
   state.coachCtrls.forEach((c) => c.abort());
@@ -3577,7 +4009,9 @@ function setMode(mode) {
   $$('#modeSeg button').forEach((b) => b.classList.toggle('on', b.dataset.mode === mode));
   $('#view-call').classList.toggle('exam-on', mode === 'exam');
   $('#coachPanel').classList.toggle('exam', mode === 'exam');
-  $('.coach-live').scrollTop = 0; // 考核的遮罩從最上面蓋起
+  $('#paneCoach').scrollTop = 0; // 考核的遮罩從最上面蓋起
+  if (state.scenario) railCheckLabel();
+  Feed.render();
 }
 
 function renderChips() {
@@ -3605,6 +4039,7 @@ function startCall(id) {
   if (!state.providerReady) toast(`AI 大腦還沒就緒：${esc($('#providerMsg').textContent)}`, 'warn', 5000);
   const outgoing = s.call_direction === 'outgoing';
   $('#phoneAvatarBox').innerHTML = avatarSVG(s.customer.avatar);
+  ringPhoto(s);
   $('#phoneName').textContent = s.customer.name;
   $('#phoneScn').textContent = s.title;
   $('#phoneStatus').textContent = outgoing ? `準備撥給${s.customer.name}` : '來電中…';
@@ -3621,6 +4056,18 @@ function startCall(id) {
     if (!t || t.provider === 'browser' || state.scenario !== s) return;
     ServerVoice.configure(s.customer);
     ServerVoice.preload(s.opening_line);
+  });
+}
+
+// 來電畫面：這位客戶在 face/ 有照片就換上（背景也鋪一層模糊的）；順便先確認接通後的畫面要用什麼
+function ringPhoto(s) {
+  const ov = $('#callOverlay');
+  ov.classList.remove('has-photo');
+  Stage.probe(s.customer.avatar).then((f) => {
+    if (state.scenario !== s || !f.photo) return;
+    $('#phoneAvatarBox').innerHTML = `<img src="${esc(f.photo)}" alt="">`;
+    ov.style.setProperty('--ring-photo', `url("${f.photo}")`);
+    ov.classList.add('has-photo');
   });
 }
 
@@ -3707,23 +4154,23 @@ function beginSession() {
   newestAlert = null;
   setCoachBusy(0);
   state.trust = s.initial_trust ?? 45;
-  $('#callTitle').textContent = `${s.customer.name} · ${s.title}`;
+  $('#callTitle').textContent = s.title;
   const me = state.rep ? ` · 你是${state.rep.title}${state.rep.address}` : '';
   $('#callSub').textContent = `${s.call_direction === 'outgoing' ? '由你撥出' : '客戶來電'} · ${s.product}${me}`;
-  $('#avatarBox').innerHTML = avatarSVG(s.customer.avatar);
   $('#custName').textContent = s.customer.name;
-  setCaption('');
-  $('#tipCard').classList.remove('fresh');
+  Stage.set(s.customer.avatar);
+  Speaker.set(false);
   $$('#modeSeg button').forEach((b) => { b.disabled = false; });
   $('#custProfile').innerHTML = [
     ['年齡', `${s.customer.age} 歲`],
     ['職業', s.customer.job],
     ['商品', s.product],
     ['背景', s.customer.summary],
-  ].map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join('') + '<dt>聲音</dt><dd id="voiceName" class="muted"></dd>';
+  ].map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join('');
   $('#taskText').textContent = s.learner_task;
-  $('#tipText').textContent = s.first_tip || '先同理客戶的情緒，再開始了解需求。';
+  $('#voiceName').textContent = '';
   $('#transcript').innerHTML = '';
+  $('#interim').textContent = '';
   updateTurnCount();
   renderChecklist();
   renderAlerts();
@@ -3734,6 +4181,9 @@ function beginSession() {
   show('call');
   setNav('home');
   startTimer();
+  Sheet.reset();
+  Tips.reset();
+  Tips.tip(s.first_tip || '先同理客戶的情緒，再開始了解需求。');
 
   setCallMode();
   setMicUi('off');
@@ -3794,7 +4244,6 @@ function switchToNormalCall() {
 function onCustomerDone() {
   if (state.ended) return;
   setCustomerState('idle');
-  setCaption(undefined, true);
   const typing = document.activeElement === $('#textInput') || $('#textInput').value.trim();
   if ($('#autoListen').checked && Mic.supported() && !typing) Mic.start();
 }
@@ -3824,7 +4273,9 @@ function recordRep(text) {
   const msg = { role: 'rep', text, turn: ++state.repTurn };
   state.messages.push(msg);
   const el = addBubble('rep', text, state.mode === 'practice' ? hits : null);
-  alertHits(hits);
+  Feed.bind(msg.turn, el);
+  Feed.claim(el);
+  alertHits(hits, el);
   state.hitWords.clear();
   // 開口之後就不能換練習／考核模式
   if (msg.turn === 1) $$('#modeSeg button').forEach((b) => { b.disabled = true; });
@@ -3841,15 +4292,16 @@ function reviseRep(entry, text) {
   tmp.innerHTML = bubbleHTML('rep', entry.msg.text, state.mode === 'practice' ? hits : null);
   const fresh = tmp.firstElementChild;
   entry.el.replaceWith(fresh);
+  Feed.bind(entry.msg.turn, fresh, entry.el);
   entry.el = fresh;
-  alertHits(hits);
+  alertHits(hits, fresh);
 }
 
-function alertHits(hits) {
+function alertHits(hits, el) {
   let fresh = null;
   // 講話中已經跳過提醒的禁語，這裡只記進警示清單，不再跳一次
   hits.forEach((h) => { if (addAlert(h.quote, h.issue, '即時偵測') && !fresh && !state.hitWords.has(h.word)) fresh = h; });
-  if (fresh && state.mode === 'practice') toast(`「${esc(fresh.word)}」${esc(fresh.issue)}`, 'danger', 2500, '合規警示');
+  if (fresh && state.mode === 'practice') Tips.alert(`「${fresh.word}」${fresh.issue}`, '合規警示', el);
 }
 
 // 還在講話就先比對禁語，講到的當下就提醒（只限練習模式）
@@ -3858,7 +4310,7 @@ function previewCompliance(text) {
   checkCompliance(text).forEach((h) => {
     if (state.hitWords.has(h.word)) return;
     state.hitWords.add(h.word);
-    toast(`「${esc(h.word)}」${esc(h.issue)}`, 'danger', 2500, '合規警示');
+    Tips.alert(`「${h.word}」${h.issue}`, '合規警示', 'pending');
   });
 }
 
@@ -3996,7 +4448,7 @@ async function runObserver(turn = state.repTurn) {
     c.ticks[turn] = [...new Set([...(c.ticks[turn] || []), ...newly])];
     let fresh = null;
     (data.flags || []).forEach((f) => { if (addAlert(f.quote, f.issue, 'AI 教練') && !fresh) fresh = f; });
-    if (fresh && state.mode === 'practice') toast(`「${esc(fresh.quote)}」${esc(fresh.issue)}`, 'danger', 2500, 'AI 教練提醒');
+    if (fresh && state.mode === 'practice') Tips.alert(`「${fresh.quote}」${fresh.issue}`, 'AI 教練提醒', Feed.rep(turn) || undefined);
     // 同一組重看好幾次時，只收比已套用的更新的那次；舊的晚到不能蓋掉新的信任度和提示
     if (seq <= (c.applied[turn] || 0)) return;
     c.applied[turn] = seq;
@@ -4010,7 +4462,7 @@ async function runObserver(turn = state.repTurn) {
     }
     if (seq === c.latest[turn]) c.missed.delete(turn);
     // 業務已經講了下一句，這則提示就過期了
-    if (data.tip && state.mode === 'practice' && turn >= state.repTurn) setTip(data.tip);
+    if (data.tip && state.mode === 'practice' && turn >= state.repTurn) setTip(data.tip, Feed.rep(turn) || undefined);
   } catch {
     // 最新這次沒看成（逾時、伺服器略過、被下一句取消）：記下來，之後補看一次，或由下一句一起帶上
     if (!state.ended && seq === c.latest[turn]) c.missed.add(turn);
@@ -4049,6 +4501,7 @@ function stopSession() {
   abortCoach();
   setCoachBusy(0);
   setCustomerState('idle');
+  Stage.pause();
 }
 
 async function endSession() {
@@ -4306,6 +4759,32 @@ document.addEventListener('keydown', (e) => {
   e.preventDefault();
   toggleMic();
 });
+// Esc：先收示範句選單，再收面板（手機上的面板；桌機的面板是固定的，不用 Esc 收）
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape' || !$('#view-call').classList.contains('active') || !$('#callOverlay').classList.contains('hidden')) return;
+  if (!$('#chips').classList.contains('hidden')) {
+    $('#chips').classList.add('hidden');
+    return;
+  }
+  if (Sheet.isOpen && !window.matchMedia('(min-width: 900px)').matches) Sheet.close();
+});
+
+// 手機打字時鍵盤會蓋住下半部：通話畫面縮到鍵盤上面那一塊，只留輸入框和最近幾句（visualViewport 是鍵盤以外看得到的範圍）
+(() => {
+  const vv = window.visualViewport;
+  if (!vv) return;
+  const root = $('#callRoot');
+  const sync = () => {
+    const kb = document.activeElement === $('#textInput') && vv.height < window.innerHeight - 120;
+    root.classList.toggle('kb-open', kb);
+    root.style.setProperty('--vvh', `${Math.round(vv.height)}px`);
+    root.style.setProperty('--vvt', `${Math.round(vv.offsetTop)}px`);
+  };
+  vv.addEventListener('resize', sync);
+  vv.addEventListener('scroll', sync);
+  $('#textInput').addEventListener('focus', () => setTimeout(sync, 50));
+  $('#textInput').addEventListener('blur', () => setTimeout(sync, 50));
+})();
 
 // ------------------------------------------------------------------ 啟動
 

@@ -50,6 +50,12 @@ MIME = {
     ".json": "application/json; charset=utf-8",
 }
 
+# 通話畫面的客戶底片和照片：face/<頭像>_idle.mp4、face/<頭像>.webp|jpg|png（素材不上傳，雲端沒有這個資料夾就是 404）。
+# 只認這幾種檔名，其他檔案和路徑一律不送
+FACE_DIR = (ROOT / "face").resolve()
+FACE_FILE = re.compile(r"/face/([a-z][a-z0-9-]{0,31})(_idle\.mp4|\.webp|\.jpg|\.png)")
+FACE_MIME = {".mp4": "video/mp4", ".webp": "image/webp", ".jpg": "image/jpeg", ".png": "image/png"}
+
 # 公司的 PoC 評分表：產品面 40、銷售面 40、合規面 20，共 100 分
 # (面向 id, 名稱, 簡稱, 滿分)
 RUBRIC_SECTIONS = (
@@ -2957,6 +2963,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._chatgpt_callback(url)
         if path == "/login":
             return self._static("/login.html")
+        if path.startswith("/face/"):
+            return self._face(path)
         return self._static(path)
 
     def do_POST(self):
@@ -4048,6 +4056,50 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", MIME.get(target.suffix.lower(), "application/octet-stream"))
             self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
+            self._send_common()
+            self.end_headers()
+            self.wfile.write(data)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            pass
+
+    def _face(self, path):
+        """客戶的底片或照片（face/ 資料夾）。影片要支援 Range：手機的 Safari 沒有 206 就不播。"""
+        m = FACE_FILE.fullmatch(path)
+        target = (FACE_DIR / (m.group(1) + m.group(2))).resolve() if m else None
+        if target is None or target.parent != FACE_DIR or not target.is_file():
+            return self._json(404, {"error": "not found"})
+        size = target.stat().st_size
+        start, end = 0, size - 1
+        # 只處理單一範圍（bytes=a-b、bytes=a-、bytes=-n）；看不懂的就整個檔案送
+        r = re.fullmatch(r"bytes=(\d*)-(\d*)", (self.headers.get("Range") or "").strip())
+        partial = bool(r and (r.group(1) or r.group(2)))
+        if partial:
+            if r.group(1):
+                start = int(r.group(1))
+                end = min(int(r.group(2)), size - 1) if r.group(2) else size - 1
+            else:
+                start = max(0, size - int(r.group(2)))
+            if start >= size or start > end:
+                try:
+                    self.send_response(416)
+                    self.send_header("Content-Range", f"bytes */{size}")
+                    self.send_header("Content-Length", "0")
+                    self._send_common()
+                    self.end_headers()
+                except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                    pass
+                return
+        with open(target, "rb") as f:
+            f.seek(start)
+            data = f.read(end - start + 1)
+        try:
+            self.send_response(206 if partial else 200)
+            self.send_header("Content-Type", FACE_MIME[target.suffix.lower()])
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Accept-Ranges", "bytes")
+            if partial:
+                self.send_header("Content-Range", f"bytes {start}-{start + len(data) - 1}/{size}")
             self.send_header("Cache-Control", "no-store")
             self._send_common()
             self.end_headers()

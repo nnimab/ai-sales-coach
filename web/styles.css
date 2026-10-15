@@ -1,6 +1,8 @@
 /* ---------- 主題：深色（預設，Grok 風）／淺色（ChatGPT 風） ---------- */
 :root,
-[data-theme="dark"] {
+[data-theme="dark"],
+.dark-scope,
+.app.in-call ~ #toasts {
   --bg: #121212;
   --sidebar: #0a0a0a;
   --panel: #1b1b1b;
@@ -25,6 +27,7 @@
   --composer-shadow: 0 0 0 1px rgba(255, 255, 255, 0.1);
   color-scheme: dark;
 }
+.dark-scope { color: var(--text); }
 [data-theme="light"] {
   --bg: #ffffff;
   --sidebar: #f9f9f9;
@@ -397,43 +400,70 @@ a.pill { text-decoration: none; }
 .hidden-box { padding-bottom: 8px; }
 .hidden-box > .muted { margin: -4px 0 14px; }
 
-/* ---------- 通話（語音模式） ---------- */
-.call { display: flex; flex-direction: column; height: 100vh; }
-.call-top { display: flex; flex: none; align-items: center; gap: 12px; height: 64px; padding: 0 16px; }
-.call-title { flex: 1; min-width: 0; text-align: center; }
-.call-title .t1 { font-size: 15px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.call-title .t2 { font-size: 12.5px; color: var(--text-3); }
-.call-actions { display: flex; align-items: center; gap: 8px; }
-.timer { padding: 0 6px; font-size: 14px; color: var(--text-2); font-variant-numeric: tabular-nums; white-space: nowrap; }
-.timer .of { color: var(--text-3); }
-.timer.near { color: var(--text); }
-.timer.over { color: var(--amber); }
-.timer.over .of { color: var(--amber); }
+/* ---------- 共用：分段按鈕、開關、選單 ---------- */
 .seg { display: inline-flex; padding: 3px; border-radius: 999px; background: var(--panel-2); }
 .seg button { height: 30px; padding: 0 14px; border: none; border-radius: 999px; background: none; color: var(--text-2); font-size: 13px; cursor: pointer; }
 .seg button.on { background: var(--bg); color: var(--text); font-weight: 600; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25); }
 .seg button:disabled { cursor: default; opacity: 0.6; }
-.call-body { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 400px; gap: 12px; padding: 0 12px 12px; }
+.switch { position: relative; display: inline-flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; }
+/* 看不到但還在：用 Tab 也能切換 */
+.switch input { position: absolute; width: 1px; height: 1px; margin: 0; opacity: 0; }
+.switch input:focus-visible + .knob { outline: 2px solid var(--text); outline-offset: 2px; }
+.knob { position: relative; width: 28px; height: 16px; flex: none; border-radius: 99px; background: var(--line-2); transition: background 0.15s; }
+.knob::after { content: ""; position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%; background: var(--text-2); transition: transform 0.15s, background 0.15s; }
+.switch input:checked + .knob { background: var(--accent); }
+.switch input:checked + .knob::after { transform: translateX(12px); background: var(--on-accent); }
+.menu-wrap { position: relative; }
+.menu { position: absolute; bottom: calc(100% + 12px); left: -6px; z-index: 30; width: 420px; max-width: calc(100vw - 32px); max-height: 52vh; overflow-y: auto; padding: 6px; border: 1px solid var(--line); border-radius: 18px; background: var(--panel); box-shadow: var(--shadow); text-align: left; }
+.menu-title { padding: 6px 10px 8px; font-size: 12px; color: var(--text-3); }
+.menu-item { display: flex; gap: 10px; width: 100%; padding: 9px 10px; border: none; border-radius: 12px; background: none; color: var(--text); font-size: 13.5px; line-height: 1.5; text-align: left; cursor: pointer; }
+.menu-item:hover { background: var(--hover); }
+.menu-item .d { width: 7px; height: 7px; flex: none; margin-top: 7px; border-radius: 50%; background: var(--green); }
+.menu-item.bad .d { background: var(--red); }
 
-.stage { display: flex; flex-direction: column; min-height: 0; }
-/* 太矮放不下時從上面排、可以捲，頭像和字幕不會被切掉或疊在一起 */
-.stage-center { flex: 1; min-height: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; justify-content: safe center; padding: 16px 20px; text-align: center; overflow-x: hidden; overflow-y: auto; }
-.stage-center > * { flex-shrink: 0; }
-.orb { --level: 0; position: relative; width: 200px; height: 200px; display: grid; place-items: center; }
-.orb-avatar { position: relative; z-index: 2; width: 168px; height: 168px; border-radius: 50%; overflow: hidden; transform: scale(calc(1 + var(--level) * 0.035)); transition: transform 0.12s ease-out; }
-.halo { position: absolute; inset: 16px; border-radius: 50%; background: var(--text); opacity: 0; pointer-events: none; transition: transform 0.12s ease-out, opacity 0.25s; }
-.orb.speaking .h1 { opacity: 0.1; transform: scale(calc(1.08 + var(--level) * 0.2)); }
-.orb.speaking .h2 { opacity: 0.055; transform: scale(calc(1.2 + var(--level) * 0.36)); }
-.orb.speaking .h3 { opacity: 0.03; transform: scale(calc(1.34 + var(--level) * 0.55)); }
-/* 瀏覽器語音拿不到音量：改用呼吸動畫 */
-.orb.speaking:not(.audio-live) .halo { animation: breathe 1.6s ease-in-out infinite; }
-.orb.speaking:not(.audio-live) .h2 { animation-delay: 0.2s; }
-.orb.speaking:not(.audio-live) .h3 { animation-delay: 0.4s; }
+/* ---------- 通話：客戶佔滿畫面（像直播、視訊通話），資訊浮在影像上；一律深色 ---------- */
+.call { position: fixed; inset: 0; z-index: 10; display: flex; overflow: hidden; background: #000; color: var(--text); }
+/* 手機鍵盤打開：只用鍵盤上面那一塊（--vvh、--vvt 由程式跟著 visualViewport 更新） */
+.call.kb-open { bottom: auto; top: var(--vvt, 0px); height: var(--vvh, 100%); }
+.call-main { position: relative; flex: 1; min-width: 0; display: flex; align-items: center; justify-content: center; }
+.stage-frame { position: relative; width: 100%; height: 100%; overflow: hidden; background: #0b0b0b; }
+
+/* 舞台：真人影像 > 本機的底片或照片（face/）> 畫的頭像 */
+.stage { --level: 0; position: absolute; inset: 0; background: radial-gradient(120% 80% at 50% 36%, #1f1f1f 0%, #0c0c0c 58%, #000 100%); }
+.stage-media { position: absolute; inset: 0; }
+.stage-media > video, .stage-media > img { display: block; width: 100%; height: 100%; object-fit: cover; object-position: 50% 28%; }
+/* 只有照片：很慢地推近一點，看起來不是死的 */
+.stage.has-photo .stage-media > img { animation: drift 22s ease-in-out infinite alternate; }
+@keyframes drift { to { transform: scale(1.06); } }
+/* 客戶講話：畫面邊緣跟著音量微微發亮（真人影像自己會動嘴，不加） */
+.stage-glow {
+  position: absolute; inset: 0; pointer-events: none; opacity: 0; transition: opacity 0.35s;
+  box-shadow: inset 0 0 calc(40px + var(--level) * 120px) calc(var(--level) * 16px) rgba(255, 255, 255, calc(0.1 + var(--level) * 0.34));
+}
+.stage.speaking:not(.face) .stage-glow { opacity: 1; }
+/* 瀏覽器內建語音拿不到音量：改用呼吸 */
+.stage.speaking:not(.audio-live) .stage-glow { animation: glow 1.8s ease-in-out infinite; }
+@keyframes glow { 0%, 100% { opacity: 0.4; } 50% { opacity: 1; } }
+.stage-shade { position: absolute; inset: 0; pointer-events: none; background: linear-gradient(to bottom, rgba(0, 0, 0, 0.62), transparent 26%), linear-gradient(to top, rgba(0, 0, 0, 0.8), transparent 50%); }
+
+/* 沒有影像也沒有照片：畫的頭像放大置中，嘴型跟著聲音 */
+.orb { position: absolute; left: 50%; top: 40%; width: 280px; height: 280px; display: grid; place-items: center; transform: translate(-50%, -50%); transition: opacity 0.3s; }
+.stage.has-clip .orb, .stage.has-photo .orb, .stage.face .orb { display: none; }
+.stage.probing .orb { opacity: 0; }
+.orb-avatar { position: relative; z-index: 2; width: 220px; height: 220px; border-radius: 50%; overflow: hidden; transform: scale(calc(1 + var(--level) * 0.035)); transition: transform 0.12s ease-out; }
+.halo { position: absolute; inset: 30px; border-radius: 50%; background: #fff; opacity: 0; pointer-events: none; transition: transform 0.12s ease-out, opacity 0.25s; }
+.stage.speaking .h1 { opacity: 0.1; transform: scale(calc(1.08 + var(--level) * 0.2)); }
+.stage.speaking .h2 { opacity: 0.055; transform: scale(calc(1.2 + var(--level) * 0.36)); }
+.stage.speaking .h3 { opacity: 0.03; transform: scale(calc(1.34 + var(--level) * 0.55)); }
+.stage.speaking:not(.audio-live) .halo { animation: breathe 1.6s ease-in-out infinite; }
+.stage.speaking:not(.audio-live) .h2 { animation-delay: 0.2s; }
+.stage.speaking:not(.audio-live) .h3 { animation-delay: 0.4s; }
 @keyframes breathe { 0%, 100% { transform: scale(1.06); } 50% { transform: scale(1.24); } }
-.orb.listening .h1 { opacity: 0.08; animation: listen 2.2s ease-in-out infinite; }
+.stage.listening .h1 { opacity: 0.08; animation: listen 2.2s ease-in-out infinite; }
 @keyframes listen { 0%, 100% { transform: scale(1.08); } 50% { transform: scale(1.16); opacity: 0.12; } }
-.orb.thinking .h1 { animation: think 1.2s ease-in-out infinite; }
+.stage.thinking .h1 { animation: think 1.2s ease-in-out infinite; }
 @keyframes think { 0%, 100% { transform: scale(1.04); opacity: 0.04; } 50% { transform: scale(1.14); opacity: 0.12; } }
+.face-video { display: block; width: 100%; height: 100%; object-fit: cover; }
 
 /* 頭像動畫：眨眼、說話嘴型、點頭 */
 .av-svg { display: block; width: 100%; height: 100%; }
@@ -444,107 +474,176 @@ a.pill { text-decoration: none; }
 .speaking .mouth-closed { opacity: 0; }
 @keyframes talk { 0% { transform: scaleY(0.25); } 18% { transform: scaleY(0.95); } 34% { transform: scaleY(0.4); } 52% { transform: scaleY(1); } 68% { transform: scaleY(0.3); } 84% { transform: scaleY(0.8); } 100% { transform: scaleY(0.25); } }
 /* 用真的語音檔時，嘴巴開合跟著音量 */
-.orb.audio-live .mouth-open { animation: none; opacity: 0; transform: scaleY(var(--mouth, 0.2)); transition: transform 0.06s linear; }
-.orb.audio-live .mouth-closed { opacity: 1; }
-.orb.audio-live.mouth-on .mouth-open { opacity: 1; }
-.orb.audio-live.mouth-on .mouth-closed { opacity: 0; }
-/* 真人模式：畫的頭像換成真人影像（LiveAvatar），嘴型由影像本身負責 */
-.orb.face { width: min(340px, 100%); height: auto; aspect-ratio: 1; }
-.orb.face .halo { display: none; }
-.orb.face .orb-avatar { width: 100%; height: 100%; border-radius: 24px; transform: none; background: var(--panel); }
-.face-video { display: block; width: 100%; height: 100%; object-fit: cover; }
+.audio-live .mouth-open { animation: none; opacity: 0; transform: scaleY(var(--mouth, 0.2)); transition: transform 0.06s linear; }
+.audio-live .mouth-closed { opacity: 1; }
+.audio-live.mouth-on .mouth-open { opacity: 1; }
+.audio-live.mouth-on .mouth-closed { opacity: 0; }
 .av-head { transform-box: view-box; transform-origin: 100px 150px; }
 .speaking .av-head { animation: bob 2.6s ease-in-out infinite; }
 @keyframes bob { 0%, 100% { transform: rotate(0); } 25% { transform: rotate(1.2deg); } 75% { transform: rotate(-1deg); } }
 
-.stage-name { margin-top: 26px; font-size: 22px; font-weight: 600; letter-spacing: -0.01em; }
-.stage-state { display: inline-flex; align-items: center; gap: 6px; height: 26px; margin-top: 6px; padding: 0 12px; border-radius: 999px; background: var(--panel-2); color: var(--text-2); font-size: 13px; }
-.stage-state:has(> span:empty) { visibility: hidden; }
-.stage-state[data-state="speaking"]::before,
-.stage-state[data-state="listening"]::before { content: ""; width: 6px; height: 6px; flex: none; border-radius: 50%; background: var(--text); animation: dot 1.2s infinite; }
-.caption { max-width: 580px; min-height: 54px; margin: 18px auto 0; font-size: 18px; line-height: 1.6; color: var(--text); transition: color 0.3s; }
-.caption.past { color: var(--text-3); }
-/* 教練提示卡：放在舞台上，不用切分頁就看得到 */
-.tip-card { display: flex; align-items: center; gap: 10px; max-width: 560px; margin: 16px auto 0; padding: 10px 16px; border: 1px solid var(--line-2); border-radius: 16px; background: var(--panel); text-align: left; transition: border-color 0.6s; }
-.tip-k { display: inline-flex; align-items: center; gap: 6px; flex: none; font-size: 12.5px; color: var(--text-3); }
-.tip-k .ic { width: 15px; height: 15px; }
-.tip-card .tip { margin: 0; font-size: 15px; line-height: 1.55; color: var(--text); }
-.tip-card.fresh { border-color: var(--text); }
-.tip-card.pending .tip-k::after { content: "・分析中…"; }
-.tip-card:has(.tip:empty), .exam-on .tip-card { display: none; }
-.trust { display: flex; align-items: center; gap: 10px; margin-top: 20px; font-size: 13px; color: var(--text-3); transition: filter 0.2s; }
-.trust-bar { width: 120px; height: 4px; border-radius: 99px; background: var(--line-2); overflow: hidden; }
-.trust-fill { width: 0; height: 100%; border-radius: inherit; background: var(--text-2); transition: width 0.6s ease, background-color 0.6s; }
+/* 上方：客戶、情境、時間、信任度、聲音來源（教練提示不放這裡，免得擋住客戶的臉） */
+.call-top { position: absolute; top: 0; left: 0; right: 0; z-index: 3; display: flex; flex-direction: column; gap: 12px; padding: max(14px, env(safe-area-inset-top)) 14px 0 16px; pointer-events: none; }
+.ct-bar { display: flex; flex-direction: column; gap: 2px; min-width: 0; color: #fff; text-shadow: 0 1px 3px rgba(0, 0, 0, 0.5); pointer-events: auto; }
+.ct-row { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.ct-who { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 10px; }
+.ct-who b { font-size: 19px; font-weight: 600; letter-spacing: -0.01em; white-space: nowrap; }
+.cust-state { display: inline-flex; align-items: center; gap: 6px; min-width: 0; font-size: 12.5px; color: rgba(255, 255, 255, 0.72); white-space: nowrap; overflow: hidden; }
+.cust-state[data-state="speaking"]::before,
+.cust-state[data-state="listening"]::before { content: ""; width: 6px; height: 6px; flex: none; align-self: center; border-radius: 50%; background: #fff; animation: dot 1.2s infinite; }
+.ct-title { font-size: 13px; color: rgba(255, 255, 255, 0.72); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.timer { flex: none; padding: 3px 10px; border-radius: 999px; background: rgba(0, 0, 0, 0.34); font-size: 13px; color: #fff; font-variant-numeric: tabular-nums; white-space: nowrap; text-shadow: none; }
+.timer .of { color: rgba(255, 255, 255, 0.5); }
+.timer.near { background: rgba(255, 255, 255, 0.18); }
+.timer.over, .timer.over .of { color: var(--amber); }
+.ct-meta { gap: 12px; margin-top: 6px; }
+.trust { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 12px; color: rgba(255, 255, 255, 0.72); }
+.trust-bar { width: 64px; height: 3px; flex: none; border-radius: 99px; background: rgba(255, 255, 255, 0.22); overflow: hidden; }
+.trust-fill { width: 0; height: 100%; border-radius: inherit; background: #fff; transition: width 0.6s ease, background-color 0.6s; }
 .trust-fill.low { background: var(--red); }
 .trust-fill.mid { background: var(--amber); }
 .trust-fill.high { background: var(--green); }
-.trust b { font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums; }
+.trust b { font-weight: 600; color: #fff; font-variant-numeric: tabular-nums; }
 .trust-delta { font-size: 12px; font-style: normal; font-weight: 600; opacity: 0; transition: opacity 0.2s; }
 .trust-delta.up { opacity: 1; color: var(--green); }
 .trust-delta.down { opacity: 1; color: var(--red); }
-.exam-on .trust { display: none; }
-.exam-tag { display: none; margin-top: 20px; }
+.trust-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.exam-tag { display: none; text-shadow: none; }
 .exam-on .exam-tag { display: inline-flex; }
+.exam-on .trust { display: none; }
+.ct-meta .seg { flex: none; margin-left: auto; background: rgba(0, 0, 0, 0.34); text-shadow: none; }
+.seg.sm button { height: 26px; padding: 0 11px; font-size: 12.5px; }
+.src-tag { align-self: flex-start; max-width: 100%; margin-top: 8px; padding: 2px 10px; border-radius: 999px; background: rgba(255, 255, 255, 0.12); font-size: 11.5px; color: rgba(255, 255, 255, 0.8); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-shadow: none; }
+.src-tag:empty { display: none; }
 
-.composer { width: 100%; max-width: 700px; margin: 0 auto; padding: 0 16px 16px; }
-.interim { min-height: 24px; margin-bottom: 8px; font-size: 14px; color: var(--text-2); text-align: center; }
-.interim:not(:empty)::before { content: "你："; color: var(--text-3); }
-.composer-box { display: flex; align-items: center; gap: 4px; padding: 8px; border-radius: 30px; background: var(--panel-2); box-shadow: var(--composer-shadow); }
-.round-btn { border-radius: 50%; width: 40px; height: 40px; }
-#textInput { flex: 1; width: 0; min-width: 0; height: 40px; padding: 0 8px; border: none; outline: none; background: none; color: var(--text); font: inherit; font-size: 15px; }
-#textInput::placeholder { color: var(--text-3); }
-.mic { position: relative; width: 40px; height: 40px; flex: none; display: grid; place-items: center; border: none; border-radius: 50%; background: none; color: var(--text-2); cursor: pointer; }
-.mic:hover { background: var(--hover); color: var(--text); }
-.mic .ic { position: relative; z-index: 1; }
-/* 開麥是黑白實心；紅色只代表靜音，跟 Meet、Teams 的習慣一樣 */
-.mic.on { background: var(--accent); color: var(--on-accent); }
-.mic.muted { background: var(--red-strong); color: #fff; }
-.mic-level { position: absolute; inset: -4px; border: 2px solid var(--text); border-radius: 50%; opacity: 0; transform: scale(calc(1 + var(--lvl, 0) * 0.28)); transition: transform 0.08s; }
-.mic.on .mic-level { opacity: 0.5; }
-.mic-state:empty { display: none; }
-.mic-state.muted { color: var(--red); }
-.send { width: 40px; height: 40px; flex: none; display: grid; place-items: center; border: none; border-radius: 50%; background: var(--accent); color: var(--on-accent); cursor: pointer; transition: opacity 0.15s; }
+/* 下方：字幕串（最近幾句對話，夾著教練提示和合規警示）、右邊一排工具、輸入框和通話按鈕。
+   整塊最多佔畫面下方 40%，字幕不會爬到客戶臉上 */
+.call-lower { position: absolute; left: 0; right: 0; bottom: 0; z-index: 3; max-height: 40%; display: flex; flex-direction: column; gap: 12px; padding: 0 12px max(12px, env(safe-area-inset-bottom)); pointer-events: none; }
+/* 右邊留給工具列；工具列往上長，不撐高這一排 */
+.lower-row { position: relative; flex: 0 1 auto; min-height: 0; display: flex; padding-right: 58px; }
+.feed { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; justify-content: flex-end; align-items: flex-start; gap: 4px; overflow: hidden; pointer-events: none; }
+/* 放不下時，最上面那句往上淡出 */
+.feed.clipped { -webkit-mask-image: linear-gradient(to bottom, transparent, #000 36px); mask-image: linear-gradient(to bottom, transparent, #000 36px); }
+.feed-list { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; max-width: 100%; }
+/* 只有字幕本身點得到（點對話打開逐字稿，點提示打開教練面板），空白的地方不擋 */
+.feed-item, .interim { pointer-events: auto; cursor: pointer; }
+.feed-item {
+  --age: 0; max-width: 100%; padding: 4px 10px; border-radius: 13px; background: rgba(0, 0, 0, 0.46);
+  -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); color: #fff; font-size: 13px; line-height: 1.42;
+  opacity: max(0.45, calc(1 - var(--age) * 0.13)); transition: opacity 0.4s; animation: feedIn 0.28s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+/* 舊的只留一行（提示兩行），倒數第二句兩行 */
+.feed-item .clip > div { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 1; overflow: hidden; word-break: break-word; }
+.feed-item:nth-last-child(2) .clip > div, .feed-item.note .clip > div { -webkit-line-clamp: 2; }
+/* 最新那句（客戶可能正在講）：留最後三行，一直看得到最新的字 */
+.feed-item:last-child .clip, .interim .clip { display: flex; flex-direction: column-reverse; max-height: 4.26em; overflow: hidden; }
+.feed-item:last-child .clip > div, .interim .clip > div { display: block; }
+.feed-item .who { margin-right: 6px; font-size: 11.5px; font-weight: 600; color: rgba(255, 255, 255, 0.6); }
+.feed-item.rep { background: rgba(255, 255, 255, 0.9); color: #0a0a0a; }
+.feed-item.rep .who { color: rgba(0, 0, 0, 0.5); }
+.feed-item.flagged { box-shadow: inset 0 0 0 1.5px var(--red-strong); }
+.feed-item mark.bad { background: rgba(239, 68, 68, 0.3); }
+.feed-item .dots { padding: 2px 0; vertical-align: middle; }
+.feed-item .dots i { background: rgba(255, 255, 255, 0.75); }
+/* 教練提示：沉穩的藍綠；合規警示：紅 */
+.feed-item.note .who { display: inline-flex; align-items: center; gap: 3px; vertical-align: -1px; }
+.feed-item.note .who .ic { width: 13px; height: 13px; }
+.feed-item.tip { border: 1px solid rgba(125, 196, 214, 0.3); background: rgba(24, 58, 70, 0.78); }
+.feed-item.tip .who { color: #9fd1e0; }
+.feed-item.alert { border: 1px solid rgba(248, 113, 113, 0.45); background: rgba(92, 22, 22, 0.8); }
+.feed-item.alert .who { color: #fca5a5; }
+@keyframes feedIn { from { opacity: 0; transform: translateY(10px); } }
+.interim { max-width: 100%; padding: 4px 10px; border: 1px dashed rgba(255, 255, 255, 0.45); border-radius: 13px; background: rgba(255, 255, 255, 0.12); color: #fff; font-size: 13px; line-height: 1.42; word-break: break-word; }
+.interim:empty { display: none; }
+.interim .who { margin-right: 6px; font-size: 12px; font-weight: 600; color: rgba(255, 255, 255, 0.6); }
+.sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+
+.rail { position: absolute; right: 0; bottom: 0; display: flex; flex-direction: column; align-items: center; gap: 12px; padding-bottom: 2px; pointer-events: auto; }
+.rail-btn { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 0; border: none; background: none; color: #fff; font-size: 11px; cursor: pointer; }
+.rail-ic { position: relative; width: 44px; height: 44px; display: grid; place-items: center; border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 50%; background: rgba(0, 0, 0, 0.38); -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px); transition: background 0.15s, color 0.15s; }
+.rail-ic .ic { width: 20px; height: 20px; }
+.rail-btn:hover .rail-ic { background: rgba(255, 255, 255, 0.18); }
+.rail-btn.on .rail-ic { border-color: #fff; background: #fff; color: #000; }
+.rail-btn.off .rail-ic { border-color: var(--red-strong); background: var(--red-strong); }
+.rail-label { font-variant-numeric: tabular-nums; white-space: nowrap; text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6); }
+.badge { position: absolute; top: -4px; right: -4px; min-width: 18px; height: 18px; padding: 0 5px; display: grid; place-items: center; border-radius: 99px; background: #fff; color: #000; font-size: 11px; font-style: normal; font-weight: 700; line-height: 1; box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.45); }
+.badge:empty { display: none; }
+.badge.alert { background: var(--red-strong); color: #fff; }
+.exam-on .badge, .exam-on .rail-btn.busy .rail-ic::after { display: none; }
+/* 教練正在看剛才那句 */
+.rail-btn.busy .rail-ic::after { content: ""; position: absolute; inset: -4px; border: 1.5px solid transparent; border-top-color: rgba(255, 255, 255, 0.9); border-radius: 50%; animation: spin 0.9s linear infinite; }
+
+.call-bottom { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 10px 12px; pointer-events: auto; }
+.composer-box {
+  flex: 1 1 260px; min-width: 0; height: 52px; display: flex; align-items: center; gap: 2px; padding: 5px;
+  border: 1px solid rgba(255, 255, 255, 0.16); border-radius: 999px; background: rgba(255, 255, 255, 0.1);
+  -webkit-backdrop-filter: blur(18px); backdrop-filter: blur(18px); transition: background 0.15s, border-color 0.15s;
+}
+.composer-box:focus-within { border-color: rgba(255, 255, 255, 0.34); background: rgba(24, 24, 24, 0.78); }
+.round-btn { width: 40px; height: 40px; border-radius: 50%; color: rgba(255, 255, 255, 0.82); }
+.round-btn:hover { background: rgba(255, 255, 255, 0.14); color: #fff; }
+/* 16px 以上：iPhone 點進去不會自動放大 */
+#textInput { flex: 1; width: 0; min-width: 0; height: 40px; padding: 0 6px; border: none; outline: none; background: none; color: #fff; font: inherit; font-size: 16px; }
+#textInput::placeholder { color: rgba(255, 255, 255, 0.55); }
+.send { width: 40px; height: 40px; flex: none; display: grid; place-items: center; border: none; border-radius: 50%; background: #fff; color: #000; cursor: pointer; transition: opacity 0.15s; }
 .send:hover { opacity: 0.85; }
 .send .ic { stroke-width: 2.2; }
+.call-controls { flex: none; display: flex; align-items: center; gap: 12px; }
+.mic { position: relative; width: 52px; height: 52px; flex: none; display: grid; place-items: center; border: none; border-radius: 50%; background: rgba(255, 255, 255, 0.14); color: #fff; cursor: pointer; -webkit-backdrop-filter: blur(18px); backdrop-filter: blur(18px); }
+.mic:hover { background: rgba(255, 255, 255, 0.22); }
+.mic .ic { position: relative; z-index: 1; width: 22px; height: 22px; }
+/* 開麥是黑白實心；紅色只代表靜音，跟 Meet、Teams 的習慣一樣 */
+.mic.on { background: #fff; color: #000; }
+.mic.muted { background: var(--red-strong); color: #fff; }
+.mic-level { position: absolute; inset: -5px; border: 2px solid #fff; border-radius: 50%; opacity: 0; transform: scale(calc(1 + var(--lvl, 0) * 0.3)); transition: transform 0.08s; }
+.mic.on .mic-level { opacity: 0.55; }
+.end-btn { height: 52px; padding: 0 20px; border: 1px solid rgba(255, 255, 255, 0.18); border-radius: 999px; background: rgba(255, 255, 255, 0.14); color: #fff; font-size: 14.5px; font-weight: 600; white-space: nowrap; cursor: pointer; -webkit-backdrop-filter: blur(18px); backdrop-filter: blur(18px); }
+.end-btn:hover { background: rgba(255, 255, 255, 0.22); }
+.hangup { width: 52px; height: 52px; flex: none; display: grid; place-items: center; border: none; border-radius: 50%; background: var(--red-strong); color: #fff; cursor: pointer; transition: opacity 0.15s; }
+.hangup:hover { opacity: 0.88; }
+.hangup .ic { width: 22px; height: 22px; }
 /* 通話已結束（即時對話評分失敗時）：輸入框和按鈕關掉，看起來也要是關著的 */
-.composer-box :disabled { opacity: 0.4; cursor: default; pointer-events: none; }
-.composer-foot { display: flex; align-items: center; justify-content: center; gap: 16px; margin-top: 10px; font-size: 12.5px; color: var(--text-3); flex-wrap: wrap; }
-.switch { position: relative; display: inline-flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; }
-/* 看不到但還在：用 Tab 也能切換 */
-.switch input { position: absolute; width: 1px; height: 1px; margin: 0; opacity: 0; }
-.switch input:focus-visible + .knob { outline: 2px solid var(--text); outline-offset: 2px; }
-.knob { position: relative; width: 28px; height: 16px; flex: none; border-radius: 99px; background: var(--line-2); transition: background 0.15s; }
-.knob::after { content: ""; position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%; background: var(--text-2); transition: transform 0.15s, background 0.15s; }
-.switch input:checked + .knob { background: var(--accent); }
-.switch input:checked + .knob::after { transform: translateX(12px); background: var(--on-accent); }
-.menu-wrap { position: relative; }
-.menu { position: absolute; bottom: calc(100% + 12px); left: -8px; z-index: 30; width: 420px; max-width: 86vw; padding: 6px; border: 1px solid var(--line); border-radius: 18px; background: var(--panel); box-shadow: var(--shadow); text-align: left; }
-.menu-title { padding: 6px 10px 8px; font-size: 12px; color: var(--text-3); }
-.menu-item { display: flex; gap: 10px; width: 100%; padding: 9px 10px; border: none; border-radius: 12px; background: none; color: var(--text); font-size: 13.5px; line-height: 1.5; text-align: left; cursor: pointer; }
-.menu-item:hover { background: var(--hover); }
-.menu-item .d { width: 7px; height: 7px; flex: none; margin-top: 7px; border-radius: 50%; background: var(--green); }
-.menu-item.bad .d { background: var(--red); }
+.call-bottom :disabled { opacity: 0.4; cursor: default; pointer-events: none; }
+.composer-foot { flex-basis: 100%; display: flex; align-items: center; justify-content: center; gap: 6px 14px; flex-wrap: wrap; font-size: 12px; color: rgba(255, 255, 255, 0.62); text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5); }
+.composer-foot:empty { display: none; }
+/* 「自動開麥」放在通話按鈕旁邊：開關在上、字在下 */
+.auto-listen { flex-direction: column; gap: 5px; width: 52px; font-size: 11px; color: rgba(255, 255, 255, 0.75); text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5); white-space: nowrap; }
+.auto-listen .knob { background: rgba(255, 255, 255, 0.24); }
+.mic-state:empty { display: none; }
+.mic-state.muted { color: #fca5a5; }
+.call :focus-visible { outline-color: #fff; }
 
-.side { position: relative; display: flex; flex-direction: column; min-height: 0; border-radius: 22px; background: var(--panel); overflow: hidden; }
-/* 單欄：上面是教練（檢核、警示），下面是逐字稿，不用切分頁 */
-.coach-live { position: relative; flex: none; max-height: 50%; overflow-y: auto; padding: 4px 20px 0; }
-.side.exam .coach-live { min-height: 170px; overflow: hidden; }
-/* 考核時整段拿掉：不管捲到哪都看不到，報讀軟體也不會念 */
-.side.exam .coach-live > .coach-sec { display: none; }
-.coach-live .coach-sec { border-bottom: none; }
-.coach-live .coach-sec + .coach-sec { border-top: 1px solid var(--line); }
+/* 面板：教練紀錄和檢核清單、完整逐字稿（手機從下面拉上來，桌機固定在右邊） */
+.sheet-backdrop { display: none; }
+.sheet { display: flex; flex-direction: column; min-height: 0; background: var(--panel); color: var(--text); }
+.sheet-grip { display: none; }
+.sheet-head { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 12px 8px 16px; }
+.sheet-tabs button { height: 32px; padding: 0 16px; }
+.tab-n { margin-left: 6px; font-size: 12px; color: var(--text-3); font-variant-numeric: tabular-nums; }
+.tab-n:empty { display: none; }
+.sheet-pane { flex: 1; min-height: 0; overflow-y: auto; padding: 0 20px 16px; }
+.sheet-pane[data-pane="transcript"] { display: flex; flex-direction: column; padding: 0; overflow: hidden; }
+.sheet-pane[hidden] { display: none !important; }
+.coach-live { position: relative; }
+.coach-log { display: flex; flex-direction: column; gap: 12px; margin: 0; padding: 0; list-style: none; }
+.coach-log li { display: flex; gap: 10px; font-size: 14px; line-height: 1.6; }
+.coach-log li .ic { width: 16px; height: 16px; margin-top: 3px; color: var(--text-3); }
+.coach-log li.alert .ic, .coach-log li.alert small { color: var(--red); }
+.coach-log li small { display: block; font-size: 12px; color: var(--text-3); font-variant-numeric: tabular-nums; }
+.coach-log li.empty { font-size: 13.5px; color: var(--text-3); }
 .ck-bar { height: 3px; margin: -4px 0 12px; border-radius: 99px; background: var(--line-2); overflow: hidden; }
 .ck-bar i { display: block; width: 0; height: 100%; background: var(--text); transition: width 0.4s; }
-/* 打開時放不下就在裡面捲，逐字稿不會被擠出去 */
-.side-more { flex: 0 1 auto; min-height: 0; overflow-y: auto; padding: 0 20px; border-top: 1px solid var(--line); }
-.side:has(.side-more[open]) .coach-live { flex-shrink: 1; }
-.side-more summary { padding: 10px 0; font-size: 12.5px; color: var(--text-3); cursor: pointer; }
+.side-more { border-top: 1px solid var(--line); }
+.side-more summary { padding: 12px 0; font-size: 12.5px; color: var(--text-3); cursor: pointer; }
 .side-more summary:hover { color: var(--text-2); }
 .side-more .coach-sec:first-of-type { padding-top: 2px; }
-.side-head { flex: none; padding: 10px 20px 4px; border-top: 1px solid var(--line); font-size: 12.5px; color: var(--text-3); }
+.call-sub { margin: 0 0 10px !important; font-size: 13px !important; color: var(--text-2); }
+/* 考核：教練的部分整段拿掉，不管捲到哪都看不到，報讀軟體也不會念 */
+.sheet.exam .coach-live { min-height: 200px; }
+.sheet.exam .coach-live > .coach-sec { display: none; }
+.sheet.exam .exam-mask { display: flex; }
 
 .transcript { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 20px; padding: 8px 18px 22px; }
-.side .transcript { min-height: 140px; }
 .transcript:empty::before { content: "接通後，雙方說的話會即時出現在這裡"; display: block; padding: 24px 0; text-align: center; font-size: 13px; color: var(--text-3); }
 .msg { display: flex; flex-direction: column; max-width: 90%; }
 .msg.customer { align-self: flex-start; }
@@ -565,6 +664,8 @@ mark.bad { padding: 0 2px; border-radius: 4px; background: var(--mark); color: i
 
 .coach-sec { padding: 14px 0; border-bottom: 1px solid var(--line); }
 .coach-sec:last-child { border-bottom: none; }
+.coach-live .coach-sec { border-bottom: none; }
+.coach-live .coach-sec + .coach-sec { border-top: 1px solid var(--line); }
 .coach-sec h4 { display: flex; align-items: center; gap: 6px; margin: 0 0 10px; font-size: 12.5px; font-weight: 500; color: var(--text-3); }
 .coach-sec p { margin: 0; font-size: 14px; line-height: 1.65; }
 .count { margin-left: auto; font-size: 12.5px; color: var(--text-2); font-variant-numeric: tabular-nums; }
@@ -594,7 +695,53 @@ mark.bad { padding: 0 2px; border-radius: 4px; background: var(--mark); color: i
 .exam-mask { position: absolute; inset: 0; z-index: 5; display: none; flex-direction: column; align-items: center; justify-content: center; gap: 6px; padding: 24px; background: var(--panel); color: var(--text-2); font-size: 13.5px; text-align: center; }
 .exam-mask .ic { width: 26px; height: 26px; color: var(--text-3); }
 .exam-mask b { font-size: 16px; color: var(--text); }
-.side.exam .exam-mask { display: flex; }
+
+/* 手機：面板從下面拉上來；鍵盤打開時只留輸入框和最近兩三句 */
+@media (max-width: 899px) {
+  .sheet {
+    position: absolute; left: 0; right: 0; bottom: 0; z-index: 20; height: min(80%, 680px); padding-bottom: env(safe-area-inset-bottom);
+    border-radius: 22px 22px 0 0; box-shadow: 0 -12px 40px rgba(0, 0, 0, 0.5);
+    transform: translateY(102%); visibility: hidden; transition: transform 0.32s cubic-bezier(0.2, 0.8, 0.2, 1), visibility 0s linear 0.32s;
+  }
+  .call.sheet-open .sheet { transform: translateY(var(--drag, 0px)); visibility: visible; transition: transform 0.32s cubic-bezier(0.2, 0.8, 0.2, 1); }
+  .call.sheet-open .sheet.dragging { transition: none; }
+  .sheet-grip { display: block; flex: none; padding: 10px 0 2px; cursor: grab; touch-action: none; }
+  .sheet-grip i { display: block; width: 40px; height: 4px; margin: 0 auto; border-radius: 99px; background: var(--line-2); }
+  .sheet-head { padding-top: 6px; }
+  .sheet-backdrop { position: absolute; inset: 0; z-index: 19; display: block; background: rgba(0, 0, 0, 0.45); opacity: 0; pointer-events: none; transition: opacity 0.25s; }
+  .call.sheet-open .sheet-backdrop { opacity: 1; pointer-events: auto; }
+  .hint { display: none; }
+  .composer-box { height: 48px; padding: 4px; }
+  .mic, .hangup { width: 48px; height: 48px; }
+  .end-btn { height: 48px; padding: 0 18px; }
+  .call-bottom { gap: 10px; }
+  .composer-foot:not(:has(.plan-tag:not(.hidden))) { display: none; }
+  .composer-foot .mic-state { display: none; }
+  .call.kb-open .ct-title, .call.kb-open .ct-meta, .call.kb-open .src-tag,
+  .call.kb-open .rail, .call.kb-open .call-controls, .call.kb-open .composer-foot { display: none; }
+  .call.kb-open .call-lower { max-height: 60%; }
+  .call.kb-open .lower-row { padding-right: 0; }
+}
+@media (max-width: 380px) {
+  .trust-label { display: none; }
+  .end-btn { padding: 0 16px; }
+}
+/* 矮的畫面（橫拿手機、小筆電）：頭像和字幕串縮小 */
+@media (max-height: 700px) {
+  .orb { width: 210px; height: 210px; }
+  .orb-avatar { width: 164px; height: 164px; }
+  .halo { inset: 23px; }
+}
+/* 桌機：舞台是置中的直式畫面，面板可以開在右邊 */
+@media (min-width: 900px) {
+  .call-main { padding: 16px; }
+  .stage-frame { width: auto; height: 100%; max-width: 100%; aspect-ratio: 704 / 896; border-radius: 28px; box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08); }
+  .sheet { display: none; width: 380px; flex: none; margin: 16px 16px 16px 0; border-radius: 22px; box-shadow: 0 0 0 1px var(--line); }
+  .call.sheet-open .sheet { display: flex; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .stage.has-photo .stage-media > img, .stage-glow, .feed-item { animation: none !important; }
+}
 
 /* ---------- 對話框 ---------- */
 .overlay { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; background: rgba(0, 0, 0, 0.6); backdrop-filter: blur(6px); animation: fadeIn 0.15s ease; }
@@ -616,6 +763,26 @@ mark.bad { padding: 0 2px; border-radius: 4px; background: var(--mark); color: i
 .round.accept { background: #22c55e; color: #fff; }
 .round.decline { background: var(--panel-2); color: var(--text); }
 .dialing #btnAccept { opacity: 0.4; pointer-events: none; }
+.ring-overlay { overflow: hidden; background: rgba(0, 0, 0, 0.82); }
+[data-theme="light"] .ring-overlay { background: rgba(0, 0, 0, 0.82); }
+.ring-overlay::before { content: ""; position: absolute; inset: -60px; background: var(--ring-photo, none) 50% 28% / cover no-repeat; filter: blur(36px) brightness(0.42); opacity: 0; transition: opacity 0.4s; }
+.ring-overlay.has-photo::before { opacity: 1; }
+.ring-overlay .call-modal { position: relative; border-color: rgba(255, 255, 255, 0.08); background: rgba(22, 22, 22, 0.72); -webkit-backdrop-filter: blur(20px); backdrop-filter: blur(20px); }
+.call-avatar .avatar img { display: block; width: 100%; height: 100%; object-fit: cover; object-position: 50% 22%; }
+.ring-overlay .call-avatar .ring { background: #fff; }
+.ring-overlay .round.decline { background: rgba(255, 255, 255, 0.14); color: #fff; }
+@media (max-width: 899px) {
+  .ring-overlay .call-modal {
+    display: flex; flex-direction: column; align-items: center; width: 100%; max-width: none; height: 100vh; height: 100dvh;
+    padding: max(48px, env(safe-area-inset-top)) 24px max(40px, env(safe-area-inset-bottom));
+    border: none; border-radius: 0; background: transparent; box-shadow: none; -webkit-backdrop-filter: none; backdrop-filter: none; animation: fadeIn 0.2s ease;
+  }
+  .ring-overlay .call-avatar { width: 136px; height: 136px; margin-top: auto; margin-bottom: 22px; }
+  .ring-overlay h2 { font-size: 30px; }
+  .ring-overlay .call-status { font-size: 15px; }
+  .ring-overlay .call-buttons { margin-top: auto; padding-top: 40px; gap: 88px; }
+  .ring-overlay .round { width: 68px; height: 68px; }
+}
 .modal-foot { display: flex; align-items: center; justify-content: center; gap: 6px; margin-top: 24px; font-size: 12.5px; color: var(--text-3); }
 .modal-foot .ic { width: 14px; height: 14px; }
 .eval-modal .spinner { width: 34px; height: 34px; margin: 0 auto 18px; border: 2.5px solid var(--line-2); border-top-color: var(--text); border-radius: 50%; animation: spin 0.8s linear infinite; }
@@ -631,9 +798,11 @@ mark.bad { padding: 0 2px; border-radius: 4px; background: var(--mark); color: i
 
 /* ---------- 通知 ---------- */
 #toasts { position: fixed; top: 72px; left: 50%; z-index: 60; display: flex; flex-direction: column; align-items: center; gap: 8px; width: max-content; max-width: calc(100vw - 32px); transform: translateX(-50%); pointer-events: none; }
-/* 通話中放在輸入框上方，不要蓋住客戶頭像和字幕 */
-/* 輸入框加上「你：」那行：一行約 146px、兩行約 166px，要放在它上面，才不會蓋住正在講的字 */
-.app.in-call ~ #toasts { top: auto; bottom: 178px; left: calc((100% - 412px) / 2); }
+/* 通話中像手機的通知一樣從最上面出現：蓋在上方資訊列上，不擋客戶的臉和字幕；桌機右邊開著面板時對齊中間的畫面 */
+.app.in-call ~ #toasts { top: max(12px, env(safe-area-inset-top)); }
+@media (min-width: 900px) {
+  body.call-panel .app.in-call ~ #toasts { left: calc((100% - 396px) / 2); }
+}
 .toast { display: flex; align-items: flex-start; gap: 10px; max-width: 480px; padding: 12px 18px; border: 1px solid var(--line); border-radius: 18px; background: var(--panel-2); box-shadow: var(--shadow); color: var(--text); font-size: 14px; line-height: 1.5; pointer-events: auto; animation: tin 0.2s ease; }
 .toast .ic { width: 18px; height: 18px; margin-top: 1px; color: var(--text-2); }
 .toast.warn .ic { color: var(--amber); }
@@ -734,22 +903,11 @@ mark.bad { padding: 0 2px; border-radius: 4px; background: var(--mark); color: i
 .footnote { margin: 32px 0 0; font-size: 12.5px; text-align: center; color: var(--text-3); }
 
 /* ---------- 響應式 ---------- */
-/* 700～800px 高的筆電：頭像縮小，提示卡才放得下 */
-@media (max-height: 800px) {
-  .orb { width: 150px; height: 150px; }
-  .orb-avatar { width: 126px; height: 126px; }
-  .orb.face { width: min(240px, 100%); }
-  .stage-name { margin-top: 14px; font-size: 20px; }
-  /* 不用 min-height: 0：字幕會被壓得比字還矮，疊到提示卡上 */
-  .caption { margin-top: 10px; font-size: 17px; min-height: auto; }
-}
 @media (hover: none) {
   .row-acts { opacity: 1; }
 }
 @media (max-width: 1180px) {
-  .call-body { grid-template-columns: minmax(0, 1fr) 340px; }
   .scn-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .app.in-call ~ #toasts { left: calc((100% - 352px) / 2); }
 }
 @media (max-width: 860px) {
   .app { display: block; height: auto; }
@@ -768,17 +926,7 @@ mark.bad { padding: 0 2px; border-radius: 4px; background: var(--mark); color: i
   .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .stat:nth-child(3) { padding-left: 4px; border-left: none; }
   .sec-totals { gap: 16px; }
-  .call { height: auto; min-height: 100vh; }
-  .call-body { grid-template-columns: 1fr; }
-  .side { min-height: 460px; }
-  .hint { display: none; }
-  /* 計時器留著：標題換到第二行，右邊按鈕才放得下 */
-  .call-top { flex-wrap: wrap; height: auto; padding: 8px 12px; row-gap: 2px; }
-  .call-title { order: 3; flex-basis: 100%; text-align: left; }
-  .call-actions { margin-left: auto; }
   .vc-current { margin-left: 0; text-align: left; }
-  /* 手機版輸入框不固定在底部、「你：」常換好幾行：通知改放在上方按鈕列下面 */
-  .app.in-call ~ #toasts { top: 104px; bottom: auto; left: 50%; }
   .form-grid { grid-template-columns: 1fr; }
   .edit-item { grid-template-columns: minmax(0, 1fr) auto; }
   .edit-item .ed-hint { grid-column: 1; grid-row: 2; }
@@ -789,11 +937,6 @@ mark.bad { padding: 0 2px; border-radius: 4px; background: var(--mark); color: i
 
 @media (max-width: 480px) {
   .face-current img { display: none; } /* 手機放不下：名字就夠了，挑臉孔時看得到照片 */
-  .call-actions { gap: 4px; }
-  .timer { padding: 0 2px; font-size: 13px; }
-  .call-actions .seg button { padding: 0 10px; }
-  #btnEnd { padding: 0 12px; }
-  #btnEnd .ic { display: none; }
 }
 
 /* ---------- 列印（一律用淺色） ---------- */

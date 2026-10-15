@@ -2,7 +2,7 @@
 <html lang="zh-Hant-TW" data-theme="dark">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>AI 對練教練</title>
 <script>try { const t = localStorage.getItem('aicoach.theme'); if (t) document.documentElement.dataset.theme = t; } catch (e) { /* 無法讀取就用預設深色 */ }</script>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%23000'/%3E%3Cpath d='M9 21c0-3.9 3.1-7 7-7s7 3.1 7 7' stroke='%23fff' stroke-width='2.4' fill='none' stroke-linecap='round'/%3E%3Ccircle cx='16' cy='10' r='3' fill='%23fff'/%3E%3C/svg%3E">
@@ -269,75 +269,117 @@
       </div>
     </section>
 
-    <!-- 通話 -->
-    <section id="view-call" class="view">
-      <div class="call">
-        <header class="call-top">
-          <button class="icon-btn" id="btnBack" type="button" title="返回"><span data-icon="back"></span></button>
-          <div class="call-title">
-            <div class="t1" id="callTitle"></div>
-            <div class="t2" id="callSub"></div>
-          </div>
-          <div class="call-actions">
-            <span class="timer" id="callTimer"><span id="callTimerText">00:00</span></span>
-            <div class="seg" id="modeSeg">
-              <button data-mode="practice" class="on" type="button">練習</button>
-              <button data-mode="exam" type="button">考核</button>
-            </div>
-            <button class="pill danger" id="btnEnd" type="button"><span data-icon="phoneOff"></span>結束並評分</button>
-          </div>
-        </header>
-
-        <div class="call-body">
-          <section class="stage">
-            <div class="stage-center">
-              <div class="orb" id="avatarStage">
+    <!-- 通話：客戶佔滿整個畫面（像直播、視訊通話），提示和字幕浮在影像上；完整的教練和逐字稿在面板裡（手機從下面拉上來，桌機在右邊） -->
+    <section id="view-call" class="view dark-scope">
+      <div class="call" id="callRoot">
+        <div class="call-main">
+          <div class="stage-frame">
+            <div class="stage" id="avatarStage">
+              <div class="stage-media" id="stageMedia"></div>
+              <div class="orb" aria-hidden="true">
                 <span class="halo h1"></span><span class="halo h2"></span><span class="halo h3"></span>
                 <div class="orb-avatar" id="avatarBox"></div>
               </div>
-              <div class="stage-name" id="custName"></div>
-              <div class="stage-state" id="custState"><span id="custStateText"></span></div>
-              <p class="caption" id="caption"></p>
-              <div class="tip-card" id="tipCard" role="status" aria-live="polite" aria-atomic="true">
-                <span class="tip-k"><span data-icon="bulb"></span>教練提示</span>
-                <p class="tip" id="tipText"></p>
-              </div>
-              <div class="trust" id="trustBox">
-                <span>客戶信任度</span>
-                <div class="trust-bar"><div class="trust-fill" id="trustFill"></div></div>
-                <b id="trustVal">0</b>
-                <em class="trust-delta" id="trustDelta"></em>
-                <span class="trust-label" id="trustLabel"></span>
-              </div>
-              <span class="tag exam-tag">考核模式 · 結束後公布</span>
+              <div class="stage-glow" aria-hidden="true"></div>
+              <div class="stage-shade" aria-hidden="true"></div>
             </div>
 
-            <div class="composer">
-              <div class="interim" id="interim"></div>
-              <div class="composer-box">
-                <div class="menu-wrap">
-                  <button class="icon-btn round-btn" id="btnChips" type="button" title="示範句"><span data-icon="plus"></span></button>
-                  <div class="menu hidden" id="chips"></div>
+            <div class="call-top">
+              <div class="ct-bar">
+                <div class="ct-row">
+                  <div class="ct-who">
+                    <b id="custName"></b>
+                    <span class="cust-state" id="custState"><span id="custStateText"></span></span>
+                  </div>
+                  <span class="timer" id="callTimer"><span id="callTimerText">00:00</span></span>
                 </div>
-                <input id="textInput" type="text" autocomplete="off" placeholder="說話，或輸入你要回客戶的話">
-                <button class="mic" id="btnMic" type="button" title="點一下開始說話（空白鍵）" aria-label="麥克風">
-                  <span class="mic-level" id="micLevel"></span>
-                  <span data-icon="mic"></span>
-                </button>
-                <button class="send" id="btnSend" type="button" title="送出" aria-label="送出"><span data-icon="arrowUp"></span></button>
-              </div>
-              <div class="composer-foot">
-                <span class="mic-state" id="micState" aria-live="polite"></span>
-                <label class="switch"><input type="checkbox" id="autoListen" checked><span class="knob"></span>客戶講完自動開麥</label>
-                <span class="hint" id="micHint">停頓 1.5 秒自動送出 · 建議戴耳機</span>
-                <span class="plan-tag hidden" id="planTag">使用 ChatGPT 方案 · <a href="https://chatgpt.com/settings/usage" target="_blank" rel="noopener" title="到 ChatGPT 查看和調整用量">Manage usage</a></span>
+                <div class="ct-title" id="callTitle"></div>
+                <div class="ct-row ct-meta">
+                  <div class="trust" id="trustBox" title="客戶信任度">
+                    <span>信任度</span>
+                    <div class="trust-bar"><div class="trust-fill" id="trustFill"></div></div>
+                    <b id="trustVal">0</b>
+                    <em class="trust-delta" id="trustDelta"></em>
+                    <span class="trust-label" id="trustLabel"></span>
+                  </div>
+                  <span class="tag exam-tag">考核模式 · 結束後公布</span>
+                  <div class="seg sm" id="modeSeg" role="group" aria-label="練習或考核">
+                    <button data-mode="practice" class="on" type="button">練習</button>
+                    <button data-mode="exam" type="button">考核</button>
+                  </div>
+                </div>
+                <span class="src-tag" id="voiceName" title="客戶的聲音和畫面"></span>
               </div>
             </div>
-          </section>
 
-          <aside class="side" id="coachPanel">
+            <span class="sr-only" id="tipLive" aria-live="polite"></span>
+            <div class="call-lower">
+              <div class="lower-row">
+                <div class="feed" id="liveFeed" aria-live="polite">
+                  <div class="feed-list" id="feedList"></div>
+                  <div class="interim" id="interim"></div>
+                </div>
+                <nav class="rail" aria-label="通話工具">
+                  <button class="rail-btn" id="railCoach" type="button" data-sheet="coach" aria-controls="coachPanel" aria-expanded="false">
+                    <span class="rail-ic"><span data-icon="bulb"></span><i class="badge" id="coachBadge"></i></span><span class="rail-label">教練</span>
+                  </button>
+                  <button class="rail-btn" id="railCheck" type="button" data-sheet="check" aria-controls="coachPanel" aria-expanded="false">
+                    <span class="rail-ic"><span data-icon="list"></span></span><span class="rail-label" id="railCheckLabel">清單</span>
+                  </button>
+                  <button class="rail-btn" id="railTranscript" type="button" data-sheet="transcript" aria-controls="coachPanel" aria-expanded="false">
+                    <span class="rail-ic"><span data-icon="message"></span></span><span class="rail-label">逐字稿</span>
+                  </button>
+                  <button class="rail-btn" id="btnSpeaker" type="button" aria-pressed="false" title="客戶的聲音：開／關">
+                    <span class="rail-ic"><span data-icon="volume"></span></span><span class="rail-label">喇叭</span>
+                  </button>
+                </nav>
+              </div>
+
+              <div class="call-bottom">
+                <div class="composer-box">
+                  <div class="menu-wrap">
+                    <button class="icon-btn round-btn" id="btnChips" type="button" title="示範句"><span data-icon="plus"></span></button>
+                    <div class="menu hidden" id="chips"></div>
+                  </div>
+                  <input id="textInput" type="text" autocomplete="off" enterkeyhint="send" placeholder="打字回覆…" aria-label="打字回覆客戶">
+                  <button class="send" id="btnSend" type="button" title="送出" aria-label="送出"><span data-icon="arrowUp"></span></button>
+                </div>
+                <div class="call-controls">
+                  <label class="switch auto-listen" title="客戶講完自動開麥"><input type="checkbox" id="autoListen" checked aria-label="客戶講完自動開麥"><span class="knob"></span><span>自動開麥</span></label>
+                  <button class="mic" id="btnMic" type="button" title="點一下開始說話（空白鍵）" aria-label="麥克風">
+                    <span class="mic-level" id="micLevel"></span>
+                    <span data-icon="mic"></span>
+                  </button>
+                  <button class="end-btn" id="btnEnd" type="button">結束並評分</button>
+                  <button class="hangup" id="btnBack" type="button" title="掛斷（不評分）" aria-label="掛斷（不評分）"><span data-icon="phoneOff"></span></button>
+                </div>
+                <div class="composer-foot">
+                  <span class="mic-state" id="micState" aria-live="polite"></span>
+                  <span class="hint" id="micHint">停頓 1.5 秒自動送出 · 建議戴耳機</span>
+                  <span class="plan-tag hidden" id="planTag">使用 ChatGPT 方案 · <a href="https://chatgpt.com/settings/usage" target="_blank" rel="noopener" title="到 ChatGPT 查看和調整用量">Manage usage</a></span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="sheet-backdrop" id="sheetBackdrop"></div>
+        <aside class="sheet" id="coachPanel" aria-label="教練和逐字稿">
+          <div class="sheet-grip" id="sheetGrip" aria-hidden="true"><i></i></div>
+          <div class="sheet-head">
+            <div class="seg sheet-tabs" role="tablist" aria-label="面板">
+              <button type="button" role="tab" id="tabCoach" data-tab="coach" aria-controls="paneCoach" aria-selected="true">教練</button>
+              <button type="button" role="tab" id="tabTranscript" data-tab="transcript" aria-controls="paneTranscript" aria-selected="false">逐字稿<span class="tab-n" id="turnCount"></span></button>
+            </div>
+            <button class="icon-btn" id="btnSheetClose" type="button" title="收起" aria-label="收起"><span data-icon="x"></span></button>
+          </div>
+          <div class="sheet-pane" id="paneCoach" data-pane="coach" role="tabpanel" aria-labelledby="tabCoach">
             <section class="coach-live" aria-label="AI 教練">
               <div class="coach-sec">
+                <h4>教練提示<span class="count" id="tipCount"></span></h4>
+                <ul class="coach-log" id="coachLog"></ul>
+              </div>
+              <div class="coach-sec" id="checkSec">
                 <h4>檢核清單<span class="count" id="checkCount"></span></h4>
                 <div class="ck-bar"><i id="checkBar"></i></div>
                 <ul class="checklist" id="checklist"></ul>
@@ -355,12 +397,13 @@
             <details class="side-more">
               <summary>本次任務與客戶資料</summary>
               <div class="coach-sec"><h4>本次任務</h4><p id="taskText"></p></div>
-              <div class="coach-sec"><h4>客戶資料</h4><dl class="profile" id="custProfile"></dl></div>
+              <div class="coach-sec"><h4>客戶資料</h4><p class="call-sub" id="callSub"></p><dl class="profile" id="custProfile"></dl></div>
             </details>
-            <div class="side-head">逐字稿 <span id="turnCount"></span></div>
+          </div>
+          <div class="sheet-pane" id="paneTranscript" data-pane="transcript" role="tabpanel" aria-labelledby="tabTranscript" hidden>
             <div class="transcript" id="transcript" role="log" aria-label="通話逐字稿"></div>
-          </aside>
-        </div>
+          </div>
+        </aside>
       </div>
     </section>
 
@@ -420,7 +463,7 @@
 </div>
 
 <!-- 來電 / 撥號 -->
-<div id="callOverlay" class="overlay hidden" role="dialog" aria-modal="true" aria-labelledby="phoneName">
+<div id="callOverlay" class="overlay ring-overlay dark-scope hidden" role="dialog" aria-modal="true" aria-labelledby="phoneName">
   <div class="modal call-modal">
     <div class="call-avatar"><span class="ring"></span><span class="ring r2"></span><div class="avatar" id="phoneAvatarBox"></div></div>
     <h2 id="phoneName"></h2>

@@ -5,7 +5,7 @@
 
 const assert = require('node:assert/strict');
 const path = require('node:path');
-const { FaceAudio, FaceLink } = require(path.join(__dirname, '..', '..', 'web', 'liveavatar.js'));
+const { FaceAudio, FaceMood, FaceLink } = require(path.join(__dirname, '..', '..', 'web', 'liveavatar.js'));
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -66,11 +66,12 @@ test('pcmTail 跳過講過的、只留完整樣本', () => {
 
 // ------------------------------------------------------------------ 假的 WebSocket、LiveKit、伺服器
 
-function harness({ connectDelay = 0, failConnect = false, video = true, api, livekitFails = false, ...extra } = {}) {
+function harness({ connectDelay = 0, failConnect = false, video = true, api, livekitFails = false, session = {}, ...extra } = {}) {
   const h = { sockets: [], rooms: [], stops: [], calls: [], started: [], ended: [], failed: [], blocked: 0 };
   h.session = {
     session_id: '11111111-2222-4333-8444-555555555555', session_token: 'st', livekit_url: 'wss://lk.test',
     livekit_client_token: 'ct', ws_url: 'wss://ws.test/v1/ws/1', max_session_duration: 1200, sandbox: false, name: 'Ann',
+    ...session,
   };
   class FakeWS {
     constructor(url) { this.url = url; this.readyState = 0; this.sent = []; h.sockets.push(this); }
@@ -426,6 +427,108 @@ test('一直出錯：30 秒內 3 次就放棄', async () => {
   h.ws().emit(err);
   assert.deepEqual(h.failed, ['真人畫面一直出錯']);
   assert.equal(h.stops.length, 1);
+});
+
+// ------------------------------------------------------------------ 自架真人：表情跟著信任度、報平安照伺服器的間隔
+
+test('信任度分三格：35 以下偏低、65 以上偏高；第一次直接照分數', () => {
+  assert.equal(FaceMood.bucket(0), 'low');
+  assert.equal(FaceMood.bucket(34), 'low');
+  assert.equal(FaceMood.bucket(35), 'mid');
+  assert.equal(FaceMood.bucket(64), 'mid');
+  assert.equal(FaceMood.bucket(65), 'high');
+  assert.equal(FaceMood.bucket(100), 'high');
+  assert.equal(FaceMood.bucket(Number.NaN), 'mid');
+  assert.equal(FaceMood.bucket('x', 'high'), 'high'); // 壞掉的分數：維持原狀
+});
+
+test('遲滯：要多越過 5 分才換格，在邊界上下跳不會一直換', () => {
+  assert.equal(FaceMood.bucket(32, 'mid'), 'mid'); // 跌破 35 但還沒到 30
+  assert.equal(FaceMood.bucket(29, 'mid'), 'low');
+  assert.equal(FaceMood.bucket(38, 'low'), 'low'); // 回到 35 以上但還沒到 40
+  assert.equal(FaceMood.bucket(40, 'low'), 'mid');
+  assert.equal(FaceMood.bucket(68, 'mid'), 'mid');
+  assert.equal(FaceMood.bucket(70, 'mid'), 'high');
+  assert.equal(FaceMood.bucket(61, 'high'), 'high');
+  assert.equal(FaceMood.bucket(59, 'high'), 'mid');
+  assert.equal(FaceMood.bucket(10, 'high'), 'low'); // 一次掉很多：直接到底
+  assert.equal(FaceMood.bucket(90, 'low'), 'high');
+});
+
+test('表情：低＝擔心（本來就在生氣的客戶是不耐煩）、中＝平常、高＝開心', () => {
+  assert.equal(FaceMood.expressionFor('low', false), 'worried');
+  assert.equal(FaceMood.expressionFor('low', true), 'annoyed');
+  assert.equal(FaceMood.expressionFor('mid', true), 'neutral');
+  assert.equal(FaceMood.expressionFor('high', true), 'happy');
+  assert.ok(FaceMood.angry({ summary: '上次被亂推商品，打來客訴，很不耐煩' }));
+  assert.ok(FaceMood.angry({ voice: { style: '語氣很衝、很生氣' } }));
+  assert.ok(FaceMood.angry({ mood: 'angry' }));
+  assert.ok(!FaceMood.angry({ summary: '看到帳面虧損很焦慮', voice: { style: '可愛、活潑' } }));
+  assert.ok(!FaceMood.angry(null));
+  assert.deepEqual(FaceMood.EXPRESSIONS, ['neutral', 'worried', 'annoyed', 'happy']);
+});
+
+test('一通電話的表情：換格才回傳新表情，同一格不再送', () => {
+  const t = FaceMood.tracker({ summary: '工作很忙的上班族' });
+  assert.equal(t.expression, 'neutral'); // 還沒有分數
+  assert.equal(t.update(45), 'neutral'); // 第一次：一定回傳
+  assert.equal(t.update(45), '');
+  assert.equal(t.update(33), ''); // 遲滯
+  assert.equal(t.update(28), 'worried');
+  assert.equal(t.update(31), '');
+  assert.equal(t.update(41), 'neutral');
+  assert.equal(t.update(72), 'happy');
+  assert.equal(t.expression, 'happy');
+  const mad = FaceMood.tracker({ summary: '打來抱怨手續費太貴' });
+  assert.equal(mad.update(20), 'annoyed');
+});
+
+test('自架：開工作階段時帶著一開始的表情；接通後信任度換格才送 agent.set_expression', async () => {
+  const h = harness({ expression: 'worried', session: { provider: 'selfhost', keepalive_ms: 20000, name: '' } });
+  h.link.setExpression('happy'); // 還在接通：先記著
+  await sleep(5);
+  assert.deepEqual(h.calls, [['/api/avatar/session', { avatar: 'chen', expression: 'worried' }]]);
+  assert.deepEqual(h.ws().sent, []);
+  h.ws().connected();
+  await h.link.ready;
+  assert.ok(h.link.selfhost);
+  const moods = () => h.ws().sent.filter((m) => m.type === 'agent.set_expression');
+  assert.equal(moods().length, 1); // 接通就換上等待時要的表情
+  assert.equal(moods()[0].expression, 'happy');
+  assert.match(moods()[0].event_id, UUID);
+  h.link.setExpression('happy'); // 一樣：不送
+  h.link.setExpression('angry'); // 不認得：不送
+  assert.equal(moods().length, 1);
+  h.link.setExpression('worried');
+  assert.deepEqual(moods().map((m) => m.expression), ['happy', 'worried']);
+  assert.equal(h.link.expression, 'worried');
+  h.link.close();
+  h.link.setExpression('neutral'); // 關了：不送
+  assert.equal(moods().length, 2);
+});
+
+test('自架：沒變過表情就不送；HeyGen 永遠不送 set_expression', async () => {
+  let h = await connected({ expression: 'neutral', session: { provider: 'selfhost' } });
+  assert.ok(!h.ws().types().includes('agent.set_expression'));
+  h.link.close();
+  h = await connected({ expression: 'neutral' }); // HeyGen（沒有 provider）
+  assert.ok(!h.link.selfhost);
+  h.link.setExpression('happy');
+  h.link.setExpression('worried');
+  assert.ok(!h.ws().types().includes('agent.set_expression'));
+  h.link.close();
+});
+
+test('報平安照伺服器給的 keepalive_ms（比預設短就用它）', async () => {
+  const h = await connected({ keepAliveMs: 100000, session: { provider: 'selfhost', keepalive_ms: 30 } });
+  await sleep(100);
+  const keep = h.ws().sent.filter((m) => m.type === 'session.keep_alive');
+  assert.ok(keep.length >= 2, String(keep.length));
+  h.link.close();
+  const g = await connected({ keepAliveMs: 100000 }); // HeyGen：沒給就用預設（這裡很長，100ms 內一次都沒有）
+  await sleep(60);
+  assert.equal(g.ws().sent.filter((m) => m.type === 'session.keep_alive').length, 0);
+  g.link.close();
 });
 
 (async () => {

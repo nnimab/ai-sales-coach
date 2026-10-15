@@ -1,5 +1,6 @@
 """資料存放：本機用檔案（和以前的檔案格式一模一樣），雲端（Vercel）用 Upstash Redis，
-還沒接資料庫時暫存在記憶體。只用 Python 標準函式庫；cryptography 只在雲端存登入資料時才載入。"""
+還沒接資料庫時暫存在記憶體；自己的伺服器（APP_MODE=server，例如 RunPod）用檔案，放在 DATA_DIR。
+只用 Python 標準函式庫；cryptography 只在雲端存登入資料時才載入。"""
 
 import base64
 import contextlib
@@ -19,7 +20,8 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 # 網頁上可以改、要記住的設定（本機寫進 .env，雲端寫進 Redis）；金鑰不放這裡
-RUNTIME_KEYS = ("LLM_PROVIDER", "LIVE_ENABLED", "LIVEAVATAR_ENABLED", "CHATGPT_MODEL", "CHATGPT_COACH_MODEL", "CLOUD_URL")
+RUNTIME_KEYS = ("LLM_PROVIDER", "LIVE_ENABLED", "LIVEAVATAR_ENABLED", "FACE_PROVIDER", "CHATGPT_MODEL", "CHATGPT_COACH_MODEL",
+                "CLOUD_URL")
 _CACHE_EXT = {"audio/wav": ".wav", "audio/mpeg": ".mp3"}
 _NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,80}$")  # 登入資料的名稱會變成檔名，不能有路徑字元
 _SID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$")
@@ -191,16 +193,20 @@ class _Local:
 
 
 class FileStore(_Local, Store):
-    """本機版：路徑和檔案格式都和以前一樣（.env、voices.json、profile.json、scenarios/custom、tts_cache）。"""
+    """本機版：路徑和檔案格式都和以前一樣（.env、voices.json、profile.json、scenarios/custom、tts_cache）。
+    per_user：給很多人用的伺服器（APP_MODE=server），每個瀏覽器的背景各存一個 profiles/<代號>.json；
+    共用的（PROFILE_SCOPE=shared）還是 profile.json。這時 .env 只放網頁上改的設定，金鑰在環境變數。"""
 
     kind = "file"
     durable = True
 
-    def __init__(self, root):
+    def __init__(self, root, per_user=False):
         self.root = Path(root)
+        self.per_user = bool(per_user)
         self.env_path = self.root / ".env"
         self.voices_path = self.root / "voices.json"
         self.profile_path = self.root / "profile.json"  # 本機只有一位使用者，uid 不影響檔名
+        self.profiles_dir = self.root / "profiles"
         self.custom_dir = self.root / "scenarios" / "custom"
         self.trash_dir = self.custom_dir / ".trash"
         self.tts_dir = self.root / "tts_cache"
@@ -241,8 +247,14 @@ class FileStore(_Local, Store):
     def _doc_path(self, name):
         if name == "voices":
             return self.voices_path
-        if name == "profile" or str(name).startswith("profile:"):
-            return self.profile_path
+        name = str(name)
+        if name == "profile" or name.startswith("profile:"):
+            uid = name.partition(":")[2]
+            if not self.per_user or uid in ("", "shared", "local"):
+                return self.profile_path
+            if not _NAME_RE.match(uid):  # 代號會變成檔名，不能有路徑字元
+                raise ValueError("背景資料的代號不對")
+            return self.profiles_dir / f"{uid}.json"
         raise ValueError(f"不認得的資料：{name}")
 
     def get_doc(self, name):
@@ -856,7 +868,10 @@ def _num(value, default):
 
 
 def open_store(root, env, on_cloud):
-    """有 Upstash 變數就用 Redis；本機用檔案；雲端沒接資料庫就先放記憶體（會提醒）。"""
+    """自己的伺服器（APP_MODE=server）用檔案，放在 DATA_DIR（沒填就是程式旁邊的 data/）；
+    有 Upstash 變數就用 Redis；本機用檔案；雲端沒接資料庫就先放記憶體（會提醒）。"""
+    if (env.get("APP_MODE") or "").strip().lower() == "server":
+        return FileStore((env.get("DATA_DIR") or "").strip() or Path(root) / "data", per_user=True)
     url = env.get("KV_REST_API_URL") or env.get("UPSTASH_REDIS_REST_URL") or ""
     token = env.get("KV_REST_API_TOKEN") or env.get("UPSTASH_REDIS_REST_TOKEN") or ""
     if url and token:

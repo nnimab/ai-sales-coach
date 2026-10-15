@@ -19,3 +19,6 @@ __pycache__/
 
 # 客戶臉孔照片（素材，不上傳）
 face/
+
+# Claude 工程師的暫存工作區
+.claude/

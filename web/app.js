@@ -1209,7 +1209,7 @@ $('#ttsModel').addEventListener('change', async (e) => {
   renderVoices();
 });
 
-// ------------------------------------------------------------------ 真人模式設定（HeyGen LiveAvatar）：開關、金鑰、每位客戶的臉孔
+// ------------------------------------------------------------------ 真人模式設定（HeyGen LiveAvatar 或自架）：開關、金鑰、每位客戶的臉孔
 
 const Faces = (() => {
   let list = null; // 臉孔清單（伺服器也有快取）；換金鑰後重抓
@@ -1230,26 +1230,39 @@ const Faces = (() => {
     const a = t.avatar;
     $('#faceSection').classList.toggle('hidden', !a);
     if (!a) return; // 舊版伺服器沒有真人模式
+    const self = a.provider === 'selfhost';
+    renderProvider(a);
+    $('#faceTitle').textContent = a.providers ? '真人模式' : '真人模式（HeyGen LiveAvatar）';
     const sw = $('#faceSwitch');
     sw.checked = a.enabled;
     // 不能用但還開著（例如即時通話關了）：還是讓人關掉
     sw.disabled = !state.canAdmin || (!a.available && !a.enabled);
     $('#faceDesc').textContent = !a.available ? a.reason
-      : a.enabled ? '即時通話時，客戶用真人影像出現，嘴型跟著聲音動；連不上就自動改回語音。'
-        : '打開後，即時通話的客戶會用 HeyGen 的真人影像出現。一般通話不會用到。';
+      : a.enabled ? `即時通話時，客戶用真人影像出現，嘴型跟著聲音動${self ? '、表情跟著信任度變' : ''}；連不上就自動改回語音。`
+        : `打開後，即時通話的客戶會用${self ? '自架' : ' HeyGen '}的真人影像出現。一般通話不會用到。`;
+    if (self) {
+      renderSelfhost(t, a);
+      return;
+    }
 
-    const env = a.key_source === 'env';
+    const server = a.key_source === 'server'; // 自己的伺服器（RunPod）：金鑰放在伺服器的環境變數
+    const env = a.key_source === 'env' || server;
     const showKey = !a.key_set || (keyOpen && !env);
     $('#faceKeyBox').classList.toggle('hidden', !showKey);
     if (showKey) {
-      $('#faceKeySteps').innerHTML = (env ? [
+      $('#faceKeySteps').innerHTML = (server ? [
+        ...STEPS.slice(0, -1),
+        `在伺服器（RunPod 的 Pod 設定）的環境變數加上 <code>${esc(a.env_name)}</code>，值貼上金鑰`,
+        '存好、伺服器重新啟動後，重新整理這一頁',
+      ] : env ? [
         ...STEPS.slice(0, -1),
         `到 Vercel 專案 → Settings → Environment Variables，新增 <code>${esc(a.env_name)}</code>，值貼上金鑰`,
         '到 Deployments → 最新一筆右邊的「⋯」→ Redeploy，完成後重新整理這一頁',
       ] : STEPS).map((s) => `<li>${s}</li>`).join('');
       $('#faceKeyRow').classList.toggle('hidden', env);
-      $('#faceKeyNote').textContent = env ? '雲端版的金鑰只放在 Vercel 的環境變數，網頁上不能貼。'
-        : '金鑰只會存在這台電腦的 .env 檔案裡，不會上傳到別的地方。';
+      $('#faceKeyNote').textContent = server ? '伺服器版的金鑰只放在環境變數，網頁上不能貼。'
+        : env ? '雲端版的金鑰只放在 Vercel 的環境變數，網頁上不能貼。'
+          : '金鑰只會存在這台電腦的 .env 檔案裡，不會上傳到別的地方。';
     }
     $('#faceSandbox').classList.toggle('hidden', !a.sandbox);
     const change = a.key_set && !env && state.canAdmin ? ' <button class="link" type="button" data-act="key">換金鑰</button>' : '';
@@ -1278,6 +1291,36 @@ const Faces = (() => {
       const c = t.customers.find((x) => x.avatar === card.dataset.avatar);
       card.querySelector('[data-act="pick"]').addEventListener('click', () => picker(card, c, a));
     });
+  }
+
+  // 這台伺服器有自架真人時才出現：自架／HeyGen 二選一
+  function renderProvider(a) {
+    $('#faceProviderRow').classList.toggle('hidden', !a.providers);
+    if (!a.providers) return;
+    $('#faceProvider').innerHTML = a.providers.map((p) => {
+      const on = p.id === a.provider;
+      return `<button type="button" data-p="${esc(p.id)}" class="${on ? 'on' : ''}" aria-pressed="${on}"${state.canAdmin ? '' : ' disabled'}>${esc(p.label)}</button>`;
+    }).join('');
+  }
+
+  // 自架：不用金鑰、不用挑臉孔；臉孔是引擎裡做好的，沒有的客戶這通用語音
+  function renderSelfhost(t, a) {
+    $('#faceKeyBox').classList.add('hidden');
+    $('#faceSandbox').classList.add('hidden');
+    $('#faceNote').textContent = '同一時間只能有一通真人通話。一定要戴耳機。';
+    const have = new Set(a.selfhost_faces || []);
+    const box = $('#faceCustomers');
+    box.classList.remove('hidden');
+    box.innerHTML = t.customers.map((c) => {
+      const ok = have.has(c.avatar);
+      return `<div class="voice-card" data-avatar="${esc(c.avatar)}">
+        <div class="vc-head">
+          <div class="vc-avatar">${avatarSVG(c.avatar)}</div>
+          <div class="vc-who"><b>${esc(c.name)}</b><span>${c.gender === 'male' ? '男' : '女'} · ${esc(c.age)} 歲</span></div>
+          <div class="vc-current face-current"><div><span>真人臉孔</span><b class="${ok ? '' : 'muted'}">${ok ? '自架臉孔' : '還沒有，用語音'}</b></div></div>
+        </div>
+      </div>`;
+    }).join('');
   }
 
   function tile(v, c) {
@@ -1336,6 +1379,20 @@ const Faces = (() => {
       toast(on ? '已開啟真人模式，下一通即時通話開始' : '已關閉真人模式', 'info', 2500);
     } catch (err) {
       sw.checked = !on;
+      toast(esc(err.message), 'error', 6000, '切換失敗');
+    }
+    renderVoices();
+    refreshStatus(); // 下一通電話要不要用真人模式，看的是狀態
+  });
+
+  $('#faceProvider').addEventListener('click', async (e) => {
+    const b = e.target.closest('button[data-p]');
+    if (!b || b.disabled || b.classList.contains('on')) return;
+    $$('#faceProvider button').forEach((x) => { x.disabled = true; });
+    try {
+      state.tts = await api('/api/avatar/config', { provider: b.dataset.p });
+      toast(`真人改用${esc(b.textContent)}，下一通即時通話開始`, 'info', 2500);
+    } catch (err) {
       toast(esc(err.message), 'error', 6000, '切換失敗');
     }
     renderVoices();
@@ -2689,6 +2746,7 @@ const LiveCall = (() => {
   let face = null;
   let faceOn = false;
   let faceVideo = null;
+  let faceMood = null; // 自架真人的表情跟著信任度換（HeyGen 沒有表情）
   let quietTimer = 0; // 萬一沒收到真人「講完了」，估計的時間到了也換成在聽
 
   // 算「業務聽到幾成」用的時鐘：自己播用 AudioContext 的時間，真人模式用真人開口的時間（都是秒）
@@ -2771,11 +2829,19 @@ const LiveCall = (() => {
     // 真人的聲音只從 LiveKit 來：放進頁面（看不到）比較不會被瀏覽器省略，收掉時一起拿走
     const audio = Object.assign(document.createElement('audio'), { autoplay: true, hidden: true });
     document.body.appendChild(audio);
+    faceMood = FaceMood.tracker(s.customer);
+    faceMood.update(s.initial_trust ?? 45);
     face = FaceLink.open({
-      avatar: s.customer.avatar, api, video: faceVideo, audio,
+      avatar: s.customer.avatar, expression: faceMood.expression, api, video: faceVideo, audio,
       onStart: faceStarted, onEnd: faceEnded, onFail: dropFace,
       onAudioBlocked: () => toast('瀏覽器擋住了真人的聲音，點一下畫面就會開始播。', 'warn', 6000),
     });
+  }
+
+  // 信任度變了：換到另一格才換表情（只有自架真人會真的送出去）
+  function mood(trust) {
+    const e = face && faceMood ? faceMood.update(trust) : '';
+    if (e) face.setExpression(e);
   }
 
   // 通話畫面中間：真人影像換掉畫的頭像；收掉時換回來
@@ -3236,9 +3302,10 @@ const LiveCall = (() => {
     gate = { open: false, lastLoud: 0, pre: [] };
     stopPlayback();
     clearTimeout(quietTimer);
-    if (face) face.close(); // 收掉真人畫面（伺服器會請 LiveAvatar 結束，不再扣點數）
+    if (face) face.close(); // 收掉真人畫面（伺服器會請 LiveAvatar 或自架引擎結束）
     face = null;
     faceOn = false;
+    faceMood = null;
     showFace(false);
     stopMic();
     const sock = ws;
@@ -3250,10 +3317,17 @@ const LiveCall = (() => {
     setMicUi('off');
   }
 
+  // 真人的小標籤：HeyGen 顯示臉孔的名字，自架的就寫「真人（自架）」
+  function faceTag() {
+    if (!faceOn || !face) return '';
+    if (face.selfhost) return ' · 真人（自架）';
+    return face.name ? ` · 真人 ${face.name}` : '';
+  }
+
   return {
-    prepare, start, stop, toggleMute,
+    prepare, start, stop, toggleMute, mood,
     send: sendText,
-    get voiceName() { return `Gemini Live · ${voice || '預設聲音'}${faceOn && face.name ? ` · 真人 ${face.name}` : ''}`; },
+    get voiceName() { return `Gemini Live · ${voice || '預設聲音'}${faceTag()}`; },
   };
 })();
 
@@ -3478,6 +3552,7 @@ function setTrust(value, instant = false) {
   const v = Math.max(0, Math.min(100, Math.round(value)));
   const prev = state.trust;
   state.trust = v;
+  LiveCall.mood(v); // 自架真人：表情跟著信任度
   const fill = $('#trustFill');
   fill.style.width = `${v}%`;
   fill.className = `trust-fill ${v < 35 ? 'low' : v < 65 ? 'mid' : 'high'}`;

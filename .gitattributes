@@ -1,0 +1,2 @@
+# 給 Linux（RunPod）跑的腳本：一律用 LF 換行，Windows 取出來也不會變成 CRLF
+*.sh text eol=lf

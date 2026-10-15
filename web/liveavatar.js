@@ -1,7 +1,7 @@
 'use strict';
 
-// 真人模式（HeyGen LiveAvatar，LITE「Avatar Only」）：客戶的聲音還是 Gemini Live 的，
-// 這裡把它轉給 LiveAvatar 對嘴，真人影像和聲音再從 LiveKit 房間傳回來。只有開了真人模式的通話才會載入 LiveKit。
+// 真人模式（HeyGen LiveAvatar，LITE「Avatar Only」；或自架的臉孔引擎，用一樣的指令）：客戶的聲音還是 Gemini Live 的，
+// 這裡把它轉給真人對嘴，真人影像和聲音再從 LiveKit 房間傳回來。只有開了真人模式的通話才會載入 LiveKit。
 
 // ------------------------------------------------------------------ 聲音的小工具（不碰畫面，Node 也能測）
 
@@ -80,6 +80,55 @@ const FaceAudio = (() => {
   return { BYTES_PER_SEC, FIRST_BYTES, NEXT_BYTES, HEARD_LAG_SEC, b64Bytes, PcmBatcher, heardShare, pcmTail };
 })();
 
+// ------------------------------------------------------------------ 表情（只有自架真人有）：跟著信任度換，不碰畫面，Node 也能測
+
+const FaceMood = (() => {
+  const EXPRESSIONS = ['neutral', 'worried', 'annoyed', 'happy'];
+  const EDGES = [35, 65]; // 和信任度條的顏色一樣：35 以下偏低、65 以上偏高
+  const MARGIN = 5; // 要多越過 5 分才換一格：信任度在邊界上下跳，表情不會一直換
+  const ORDER = ['low', 'mid', 'high'];
+  // 客戶本來就在生氣（看公開的背景和說話語氣）：信任度低時是不耐煩，不是擔心
+  const ANGRY = /生氣|氣憤|憤怒|火大|不爽|不耐|暴躁|惱火|抱怨|客訴|投訴|兇|嗆/;
+
+  // 信任度落在哪一格；prev 是現在那一格（沒有就直接照分數算）
+  function bucket(trust, prev) {
+    const t = Number(trust);
+    let i = ORDER.indexOf(prev);
+    if (!Number.isFinite(t)) return i < 0 ? 'mid' : prev;
+    if (i < 0) return t < EDGES[0] ? 'low' : t < EDGES[1] ? 'mid' : 'high';
+    while (i < 2 && t >= EDGES[i] + MARGIN) i += 1;
+    while (i > 0 && t < EDGES[i - 1] - MARGIN) i -= 1;
+    return ORDER[i];
+  }
+
+  function angry(customer) {
+    const c = customer || {};
+    return c.mood === 'angry' || ANGRY.test(`${c.summary || ''} ${c.voice?.style || ''}`);
+  }
+
+  function expressionFor(b, isAngry) {
+    if (b === 'low') return isAngry ? 'annoyed' : 'worried';
+    return b === 'high' ? 'happy' : 'neutral';
+  }
+
+  // 一通電話一個：update(信任度) 換了一格才回傳新的表情，沒換回傳空字串
+  function tracker(customer) {
+    const isAngry = angry(customer);
+    let b = '';
+    return {
+      update(trust) {
+        const next = bucket(trust, b);
+        const changed = next !== b;
+        b = next;
+        return changed ? expressionFor(b, isAngry) : '';
+      },
+      get expression() { return b ? expressionFor(b, isAngry) : 'neutral'; },
+    };
+  }
+
+  return { EXPRESSIONS, EDGES, MARGIN, bucket, angry, expressionFor, tracker };
+})();
+
 // ------------------------------------------------------------------ 連線：LiveKit 房間（看和聽）＋ WebSocket（叫它講話）
 
 const FaceLink = (() => {
@@ -89,7 +138,7 @@ const FaceLink = (() => {
   const DEFAULTS = {
     connectMs: 8000, // LiveKit 房間、控制連線各等 8 秒
     readyMs: 15000, // 從響鈴算起，15 秒內真人畫面沒出來就改用語音
-    keepAliveMs: 120000, // 閒置 5 分鐘會被收掉：官方建議每 2～3 分鐘報一次平安
+    keepAliveMs: 120000, // 閒置 5 分鐘會被收掉：官方建議每 2～3 分鐘報一次平安（伺服器給了 keepalive_ms 就照它，自架是 20 秒）
     flushMs: 100, // 不夠一包時最多等這麼久就先送：等越久，客戶開口越晚
     errorWindowMs: 30000, // 30 秒內出錯 3 次就放棄
     maxErrors: 3,
@@ -150,7 +199,7 @@ const FaceLink = (() => {
     return Promise.race([promise, timer]).finally(() => clearTimeout(t));
   }
 
-  // opts：avatar（我們的頭像代號）、api(path, body)、video／audio（要接上影像和聲音的元素）、
+  // opts：avatar（我們的頭像代號）、expression（自架真人一開始的表情）、api(path, body)、video／audio（要接上影像和聲音的元素）、
   // onStart(id)／onEnd(id) 真人開始、講完一句，onFail(原因) 接通後才斷掉，onAudioBlocked() 瀏覽器擋住了聲音。
   // 打斷之後 LiveAvatar 會送 speak_interrupted，接著還會再送一次 speak_ended（實測）：句子在打斷時就拿掉了，兩個都不再通知。
   // 測試可以換掉 livekit、WebSocket、stopSession 和各種等待時間
@@ -170,6 +219,8 @@ const FaceLink = (() => {
     let flushTimer = 0;
     let keepTimer = 0;
     let readyTimer = 0;
+    let mood = FaceMood.EXPRESSIONS.includes(o.expression) ? o.expression : 'neutral'; // 要的表情
+    let shown = mood; // 引擎現在的表情（開工作階段時一起帶過去）
     let settle = null;
     const ready = new Promise((resolve, reject) => { settle = { resolve, reject }; });
     ready.catch(() => {}); // 呼叫端自己決定要不要等
@@ -342,7 +393,7 @@ const FaceLink = (() => {
       readyTimer = setTimeout(() => fail('真人畫面太久沒出來'), o.readyMs);
       const lkLoad = o.livekit();
       lkLoad.catch(() => {});
-      const s = await o.api('/api/avatar/session', { avatar: o.avatar });
+      const s = await o.api('/api/avatar/session', o.expression ? { avatar: o.avatar, expression: mood } : { avatar: o.avatar });
       if (!s?.session_id || !s.livekit_url || !s.ws_url) throw new Error('伺服器沒有給真人畫面的連線資料');
       if (closed) { o.stopSession(s.session_id, false); return; } // 已經掛斷：剛開好的馬上收掉
       sess = s;
@@ -356,8 +407,24 @@ const FaceLink = (() => {
       if (closed) return;
       isReady = true;
       clearTimeout(readyTimer);
-      keepTimer = setInterval(() => send({ type: 'session.keep_alive', event_id: uuid() }), o.keepAliveMs);
+      // 自架的走 RunPod 的代理，閒置 100 秒就斷：照伺服器說的間隔報平安
+      const keepMs = Number(sess.keepalive_ms) > 0 ? Math.min(Number(sess.keepalive_ms), o.keepAliveMs) : o.keepAliveMs;
+      keepTimer = setInterval(() => send({ type: 'session.keep_alive', event_id: uuid() }), keepMs);
+      syncMood(); // 等畫面的時候信任度變了：接通就換上
       settle.resolve(link);
+    }
+
+    // 換表情：只有自架真人懂這個指令（HeyGen 不送）；跟現在一樣就不送
+    function syncMood() {
+      if (closed || !isReady || sess?.provider !== 'selfhost' || mood === shown) return;
+      shown = mood;
+      send({ type: 'agent.set_expression', expression: mood, event_id: uuid() });
+    }
+
+    function setExpression(exp) {
+      if (!FaceMood.EXPRESSIONS.includes(exp)) return;
+      mood = exp;
+      syncMood();
     }
 
     function sendAudio(audio) {
@@ -428,10 +495,12 @@ const FaceLink = (() => {
     }
 
     const link = {
-      ready, speak, endTurn, interrupt, listen, unlock, close,
+      ready, speak, endTurn, interrupt, listen, unlock, close, setExpression,
       get busy() { return !!utt || playing.size > 0; },
       get name() { return sess?.name || ''; },
       get sandbox() { return !!sess?.sandbox; },
+      get selfhost() { return sess?.provider === 'selfhost'; },
+      get expression() { return shown; },
       get sessionId() { return sess?.session_id || ''; },
     };
     run().catch((e) => fail(e?.message || '真人模式連不上'));
@@ -441,4 +510,4 @@ const FaceLink = (() => {
   return { open: connect, loadLivekit };
 })();
 
-if (typeof module !== 'undefined' && module.exports) module.exports = { FaceAudio, FaceLink };
+if (typeof module !== 'undefined' && module.exports) module.exports = { FaceAudio, FaceMood, FaceLink };

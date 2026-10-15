@@ -91,12 +91,16 @@
         <h2 class="sec-title">客戶的聲音</h2>
         <div class="voice-customers" id="voiceCustomers"></div>
 
-        <!-- 真人模式：即時通話時客戶用 HeyGen LiveAvatar 的真人影像出現 -->
+        <!-- 真人模式：即時通話時客戶用真人影像出現（HeyGen LiveAvatar；有自架引擎的伺服器可以切換成自架） -->
         <div id="faceSection" class="hidden">
           <h2 class="sec-title">真人模式</h2>
           <div class="brain-card setting-row">
-            <div class="setting-main"><b>真人模式（HeyGen LiveAvatar）</b><p class="muted" id="faceDesc"></p></div>
-            <label class="switch lg"><input type="checkbox" id="faceSwitch" aria-label="真人模式（HeyGen LiveAvatar）"><span class="knob"></span></label>
+            <div class="setting-main"><b id="faceTitle">真人模式（HeyGen LiveAvatar）</b><p class="muted" id="faceDesc"></p></div>
+            <label class="switch lg"><input type="checkbox" id="faceSwitch" aria-label="真人模式"><span class="knob"></span></label>
+          </div>
+          <div class="face-provider hidden" id="faceProviderRow">
+            <span class="muted">真人用</span>
+            <div class="seg" id="faceProvider" role="group" aria-label="真人用哪一個"></div>
           </div>
           <div class="key-box hidden" id="faceKeyBox">
             <ol class="key-steps" id="faceKeySteps"></ol>

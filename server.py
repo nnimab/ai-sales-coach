@@ -1,5 +1,6 @@
 """AI 理專對練教練：本機 demo 伺服器（只用 Python 標準函式庫，不需安裝套件）。
-同一份程式也能放到 Vercel（app.py 包成 WSGI），雲端模式的資料改存 Upstash Redis。"""
+同一份程式也能放到 Vercel（app.py 包成 WSGI），雲端模式的資料改存 Upstash Redis；
+也能放在自己的伺服器（APP_MODE=server，例如 RunPod）：跟雲端一樣對外開放，資料存成檔案（DATA_DIR）。"""
 
 import ctypes
 import hashlib
@@ -15,6 +16,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import uuid
 import webbrowser
 from collections import OrderedDict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -22,6 +24,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
 import chatgpt_brain
+import faceengine
 import liveavatar
 import storage
 import tts
@@ -100,7 +103,7 @@ def load_env():
             value = value.split(" #", 1)[0].strip().strip('"').strip("'")
             env[key.strip()] = value
     for key, value in os.environ.items():
-        if key.startswith(ENV_PREFIXES) or key in ("PORT", "ALLOWED_HOSTS", "CLOUD_URL"):
+        if key.startswith(ENV_PREFIXES) or key in ENV_KEYS:
             # 和 .env 一樣去掉前後空白：Vercel 上貼的值多一個換行，同步密碼、通行碼就會永遠對不上
             env[key] = value.strip()
     return env
@@ -110,16 +113,22 @@ def load_env():
 ENV_PREFIXES = (
     "LLM_", "OPENAI_", "AZURE_OPENAI_", "ELEVENLABS_", "GEMINI_", "YATING_", "TTS_",
     "CHATGPT_", "APP_", "AUTH_", "ADMIN_", "PROFILE_", "BRAIN_", "LIVE_", "STORE_", "KV_", "UPSTASH_",
-    "OLLAMA_", "VERCEL", "SESSION_", "LIVEAVATAR_",
+    "OLLAMA_", "VERCEL", "SESSION_", "LIVEAVATAR_", "LIVEKIT_", "FACE_",
 )
+ENV_KEYS = ("PORT", "HOST", "ALLOWED_HOSTS", "CLOUD_URL", "DATA_DIR")
 
 
 TTS_MAX_BYTES = 4_000_000  # Vercel 一個回應最多 4.5 MB
 
 
+def app_mode(env):
+    return (env.get("APP_MODE") or "").strip().lower()
+
+
 def detect_cloud(env):
-    """放在 Vercel（或資料夾不能寫）就是雲端模式；本機用 start.bat 不需要任何新設定。"""
-    if (env.get("APP_MODE") or "").strip().lower() == "cloud":
+    """放在 Vercel、自己的伺服器（APP_MODE=server），或資料夾不能寫，就是雲端模式（對外開放、要 cookie）；
+    本機用 start.bat 不需要任何新設定。"""
+    if app_mode(env) in ("cloud", "server"):
         return True
     if any(env.get(k) or os.environ.get(k) for k in ("VERCEL", "VERCEL_ENV", "VERCEL_URL")):
         return True
@@ -201,6 +210,8 @@ def build_providers(env, on_cloud=False):
 
 ENV = load_env()
 ON_CLOUD = detect_cloud(ENV)
+# 自己的伺服器（RunPod）：跟雲端一樣，只是資料存成檔案、前面是自己的代理，程式自己開埠（HOST、PORT）
+SERVER_MODE = app_mode(ENV) == "server"
 STORE = storage.open_store(ROOT, ENV, ON_CLOUD)
 PROVIDERS = build_providers(ENV, ON_CLOUD)
 CHATGPT_CFG = chatgpt_brain.ChatGPTConfig.from_env(ENV, ON_CLOUD)
@@ -2080,26 +2091,104 @@ def avatar_client():
     return liveavatar.LiveAvatar(avatar_key(), ENV.get("LIVEAVATAR_BASE_URL") or liveavatar.BASE)
 
 
-def avatar_problem():
+def avatar_problem(provider=None):
     """真人模式現在為什麼不能用（一句話）；能用就回空字串。"""
-    if not avatar_key():
+    provider = provider or face_provider()
+    if provider == "selfhost":
+        missing = selfhost_missing()
+        if missing:
+            return "自架真人還沒設定好：伺服器少了 " + "、".join(missing)
+    elif not avatar_key():
         if ON_CLOUD:
+            if SERVER_MODE:
+                return f"還沒設定 LiveAvatar 金鑰：請在伺服器的環境變數加上 {AVATAR_KEY_NAME} 後重新啟動"
             return f"還沒設定 LiveAvatar 金鑰：請到 Vercel 新增 {AVATAR_KEY_NAME} 後 Redeploy"
         return "還沒設定 LiveAvatar 金鑰：請在「聲音設定」的真人模式貼上"
     if not (live_enabled() and PROVIDERS["gemini"]["configured"]):
         return "真人模式要配合即時通話（Gemini Live）：請先到「AI 大腦」打開"
+    if provider == "selfhost":
+        h = face_health()
+        if not h["ok"]:
+            return h["error"] or "自架真人引擎沒有回應，請稍後再試"
+        if not h["ready"]:
+            return "自架真人引擎還在準備，請稍後再試"
     return ""
 
 
 def avatar_info():
-    """給畫面看的狀態：有沒有金鑰、開關、測試模式；不含金鑰本身。"""
-    problem = avatar_problem()
+    """給畫面看的狀態：用哪一家、有沒有金鑰、開關、測試模式；不含金鑰本身。
+    這台有自架真人（FACE_SECRET）才多給 providers、choice 和自架的臉孔清單，畫面才會出現切換。"""
+    provider = face_provider()
+    problem = avatar_problem(provider)
     enabled = avatar_enabled()
-    return {
+    info = {
         "enabled": enabled, "on": enabled and not problem, "available": not problem, "reason": problem,
-        "key_set": bool(avatar_key()), "sandbox": avatar_sandbox(),
-        "key_source": "env" if ON_CLOUD else "file", "env_name": AVATAR_KEY_NAME,
+        "key_set": bool(avatar_key()), "sandbox": avatar_sandbox() and provider == "heygen",
+        "key_source": ("server" if SERVER_MODE else "env") if ON_CLOUD else "file", "env_name": AVATAR_KEY_NAME,
+        "provider": provider,
     }
+    if selfhost_on_server():
+        choice = setting("FACE_PROVIDER")
+        info.update(providers=[{"id": k, "label": v} for k, v in FACE_PROVIDERS.items()],
+                    choice=choice if choice in FACE_PROVIDERS else "auto", selfhost_faces=face_health()["faces"])
+    return info
+
+
+# ---- 自架臉孔（RunPod 上的臉孔引擎）：伺服器簽 LiveKit 通行證、叫引擎進房間；瀏覽器照 HeyGen 的方式看和聽
+FACE_PROVIDERS = {"selfhost": "自架", "heygen": "HeyGen"}
+FACE_NEEDS = ("FACE_SECRET", "FACE_PUBLIC_URL", "LIVEKIT_URL", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET")
+FACE_HEALTH_TTL = 10  # 引擎好了：10 秒內不重問（狀態列每幾秒就會來問）
+FACE_HEALTH_RETRY = 2  # 還沒好或連不上：2 秒後就重問，引擎一好畫面很快跟上
+_face_health = {"at": 0.0, "data": None}
+_face_health_lock = threading.Lock()
+
+
+def selfhost_on_server():
+    """這台伺服器有沒有自架真人（有設 FACE_SECRET）。Vercel、筆電沒有：畫面跟以前一樣只有 HeyGen。"""
+    return bool((ENV.get("FACE_SECRET") or "").strip())
+
+
+def selfhost_missing():
+    """自架真人少了哪些環境變數（只回名稱）；都有就是空的。"""
+    out = [k for k in FACE_NEEDS if not (ENV.get(k) or "").strip()]
+    if "FACE_PUBLIC_URL" not in out and not faceengine.public_ok(ENV["FACE_PUBLIC_URL"]):
+        out.append("FACE_PUBLIC_URL")
+    return out
+
+
+def face_engine():
+    return faceengine.FaceEngine(ENV.get("FACE_URL") or "http://127.0.0.1:8010", ENV.get("FACE_SECRET") or "",
+                                 ENV.get("FACE_PUBLIC_URL") or "")
+
+
+def face_health(fresh=False):
+    """引擎的狀態 {ok, ready, faces, error}；連不上就是 ok=False，error 是給人看的原因。"""
+    if not selfhost_on_server():
+        return {"ok": False, "ready": False, "faces": [], "error": ""}
+    with _face_health_lock:
+        hit = _face_health["data"]
+        ttl = FACE_HEALTH_TTL if hit and hit["ready"] else FACE_HEALTH_RETRY
+        if not fresh and hit is not None and time.monotonic() - _face_health["at"] < ttl:
+            return dict(hit)
+    try:
+        h = face_engine().health()
+        data = {"ok": h["ok"], "ready": h["ok"] and h["ready"], "faces": h["faces"], "error": ""}
+    except faceengine.FaceError as e:
+        data = {"ok": False, "ready": False, "faces": [], "error": str(e)}
+    with _face_health_lock:
+        _face_health.update(at=time.monotonic(), data=data)
+    return dict(data)
+
+
+def face_provider():
+    """真人用哪一家：畫面上選過就照選的。沒選過時，這台有自架引擎而且好了就用自架，其他（Vercel、筆電）照舊用 HeyGen；
+    引擎還沒好、這台又沒有 HeyGen 金鑰，也算自架（畫面會說引擎還在準備，不會跳去說缺 HeyGen 金鑰）。"""
+    choice = setting("FACE_PROVIDER")
+    if choice == "heygen" or (choice == "selfhost" and selfhost_on_server()):
+        return choice
+    if selfhost_on_server() and (not avatar_key() or face_health()["ready"]):
+        return "selfhost"
+    return "heygen"
 
 
 def avatar_faces(cfg=None):
@@ -2123,7 +2212,8 @@ def avatar_list():
 
 def avatar_error_text(e):
     if e.kind == "key":
-        where = f"請到 Vercel 檢查 {AVATAR_KEY_NAME} 後 Redeploy" if ON_CLOUD else "請到「聲音設定」重新貼一次"
+        where = (f"請檢查伺服器環境變數的 {AVATAR_KEY_NAME}" if SERVER_MODE
+                 else f"請到 Vercel 檢查 {AVATAR_KEY_NAME} 後 Redeploy" if ON_CLOUD else "請到「聲音設定」重新貼一次")
         return f"{e}：{where}"
     return str(e)
 
@@ -2253,7 +2343,7 @@ def setup_problems():
         out.append("還沒設定 APP_PASSCODE（登入用的通行碼）")
     if not ENV.get("GEMINI_API_KEY"):
         out.append("還沒設定 GEMINI_API_KEY")
-    if STORE.kind != "redis":
+    if not STORE.durable:
         out.append("還沒接上 Upstash Redis（設定和自訂情境重新部署後會不見）")
     return out
 
@@ -2759,6 +2849,11 @@ class Handler(BaseHTTPRequestHandler):
         return origin is None or urlparse(origin).netloc.lower() == self._req_host().lower()
 
     def _client_ip(self):
+        if SERVER_MODE:
+            # 自己的伺服器前面是代理（RunPod 的 Cloudflare）：連進來的都是代理，真正的來源在標頭裡
+            fwd = (self.headers.get("Cf-Connecting-Ip") or self.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
+            if fwd:
+                return fwd[:64]
         return str((self.client_address or ("",))[0] or "unknown")
 
     def _begin(self, path):
@@ -3343,7 +3438,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _avatar_list(self):
         if not avatar_key():
-            return self._json(400, {"error": avatar_problem()})
+            return self._json(400, {"error": avatar_problem("heygen")})
         try:
             rows = avatar_list()
         except liveavatar.AvatarError as e:
@@ -3353,18 +3448,27 @@ class Handler(BaseHTTPRequestHandler):
                          "sandbox_avatar": {"id": liveavatar.SANDBOX_AVATAR, "name": liveavatar.SANDBOX_NAME}})
 
     def _avatar_config(self, body):
-        enabled = body.get("enabled")
-        if not isinstance(enabled, bool):
+        """enabled：真人模式開關；provider：用哪一家（selfhost、heygen；auto 是回到自動選）。兩個可以分開送。"""
+        enabled, provider = body.get("enabled"), body.get("provider")
+        if not isinstance(enabled, bool) and provider is None:
             return self._json(400, {"error": "資料格式錯誤"})
-        problem = avatar_problem()
-        if enabled and problem:
-            return self._json(400, {"error": problem})
-        set_setting("LIVEAVATAR_ENABLED", "1" if enabled else "0")
+        if provider is not None:
+            if provider not in (*FACE_PROVIDERS, "auto") or (provider == "selfhost" and not selfhost_on_server()):
+                return self._json(400, {"error": "資料格式錯誤"})
+            set_setting("FACE_PROVIDER", "" if provider == "auto" else provider)
+        if isinstance(enabled, bool):
+            problem = avatar_problem()
+            if enabled and problem:
+                return self._json(400, {"error": problem})
+            set_setting("LIVEAVATAR_ENABLED", "1" if enabled else "0")
         self._json(200, tts_status())
 
     def _avatar_key(self, body):
         if ON_CLOUD:
             # 雲端不能改檔案：金鑰只能設在 Vercel 的環境變數（跟語音金鑰一樣）
+            if SERVER_MODE:
+                return self._json(409, {"error": f"請在伺服器的環境變數加上 {AVATAR_KEY_NAME} 後重新啟動",
+                                        "env_name": AVATAR_KEY_NAME, "how": "server"})
             return self._json(409, {"error": f"請到 Vercel → Settings → Environment Variables 新增 {AVATAR_KEY_NAME} 後 Redeploy",
                                     "env_name": AVATAR_KEY_NAME, "how": "vercel"})
         key = str(body.get("key", "")).strip()
@@ -3399,8 +3503,9 @@ class Handler(BaseHTTPRequestHandler):
         self._json(200, tts_status())
 
     def _avatar_session(self, body):
-        """響鈴時和 Gemini Live 的通行證一起要：建立並啟動 LiveAvatar 工作階段，回傳瀏覽器連線要用的資料。"""
-        problem = avatar_problem()
+        """響鈴時和 Gemini Live 的通行證一起要：建立並啟動真人工作階段（LiveAvatar 或自架），回傳瀏覽器連線要用的資料。"""
+        provider = face_provider()
+        problem = avatar_problem(provider)
         if problem:
             return self._json(400, {"error": problem})
         if not avatar_enabled():
@@ -3409,6 +3514,8 @@ class Handler(BaseHTTPRequestHandler):
         cust, _ = customer_for(avatar)
         if not cust:
             return self._json(404, {"error": "找不到這位客戶"})
+        if provider == "selfhost":
+            return self._selfhost_session(avatar, cust, body)
         sandbox = avatar_sandbox()
         face = {"id": liveavatar.SANDBOX_AVATAR, "name": liveavatar.SANDBOX_NAME} if sandbox else avatar_faces().get(avatar)
         if not isinstance(face, dict) or not face.get("id"):
@@ -3428,7 +3535,39 @@ class Handler(BaseHTTPRequestHandler):
         except StoreError:
             pass  # 記不住也沒關係：結束時直接請 LiveAvatar 收掉
         self.log_message("真人模式開始（%s）", "測試模式" if sandbox else face.get("name") or "")
-        self._json(200, dict(sess, sandbox=sandbox, name=face.get("name") or ""))
+        self._json(200, dict(sess, sandbox=sandbox, name=face.get("name") or "", provider="heygen"))
+
+    def _selfhost_session(self, avatar, cust, body):
+        """自架真人：簽兩張只能進同一個新房間的 LiveKit 通行證（引擎送、瀏覽器看），請引擎進房間。
+        回給瀏覽器的格式和 HeyGen 一樣，多了 provider 和 keepalive_ms；LiveKit 和 FACE_SECRET 的密碼都不往外給。"""
+        if avatar not in face_health()["faces"]:
+            who = cust.get("name") or "這位客戶"
+            return self._json(409, {"error": f"{who}還沒有自架的真人臉孔，這通先用語音"})
+        uid = getattr(CTX, "uid", "") or ""
+        if count_try("avstart:" + (uid or self._client_ip()), 600) > AVATAR_STARTS:
+            return self._json(429, {"error": "真人模式開太多次了，請 10 分鐘後再試"})
+        expression = body.get("expression") if body.get("expression") in faceengine.EXPRESSIONS else "neutral"
+        sid, room = str(uuid.uuid4()), "aic-" + secrets.token_hex(8)
+        key, secret, lk_url = ENV["LIVEKIT_API_KEY"], ENV["LIVEKIT_API_SECRET"], ENV["LIVEKIT_URL"]
+        engine_token = faceengine.livekit_token(key, secret, f"face-{sid}", room, publish=True, subscribe=False)
+        viewer_token = faceengine.livekit_token(key, secret, f"rep-{sid}", room, publish=False, subscribe=True)
+        engine = face_engine()
+        try:
+            ws_path = engine.start(sid, avatar, expression, lk_url, engine_token, AVATAR_MAX_SEC)
+        except faceengine.FaceError as e:
+            self.log_message("自架真人開不起來：%s", e.detail or e)
+            face_health(fresh=True)  # 引擎掛了或還沒好：狀態列馬上改說原因
+            return self._json(409 if e.kind == "busy" else 502, {"error": str(e)})
+        try:
+            STORE.eph_set(AVSESS + sid, {"uid": uid, "provider": "selfhost"}, AVATAR_MAX_SEC + 600)
+        except StoreError:
+            pass  # 記不住也沒關係：結束時照樣請引擎收掉
+        self.log_message("真人模式開始（自架 %s）", avatar)
+        self._json(200, {
+            "session_id": sid, "livekit_url": lk_url, "livekit_client_token": viewer_token,
+            "ws_url": engine.ws_url(ws_path, sid), "max_session_duration": AVATAR_MAX_SEC,
+            "provider": "selfhost", "keepalive_ms": faceengine.KEEPALIVE_MS, "sandbox": False, "name": "",
+        })
 
     def _avatar_stop(self, body):
         """掛斷、換頁或關分頁時收掉真人畫面（關分頁時是 sendBeacon 送來的）；重複呼叫也沒關係。"""
@@ -3441,6 +3580,13 @@ class Handler(BaseHTTPRequestHandler):
             rec = None
         if isinstance(rec, dict) and rec.get("uid") != (getattr(CTX, "uid", "") or ""):
             return self._json(403, {"error": "這不是你開的真人畫面"})
+        # 自架的引擎一次只能一通：查不到紀錄（例如伺服器剛重開）也請它收掉，不然要等到時間到才放出顯卡。重複收沒關係
+        if (rec or {}).get("provider") == "selfhost" or (rec is None and selfhost_on_server()):
+            try:
+                STORE.eph_pop(AVSESS + sid)
+            except StoreError:
+                pass
+            return self._json(200, {"ok": True, "stopped": face_engine().stop(sid)})
         # 資料存得住（本機、Upstash）卻沒有紀錄：不是這裡開的，或已經收掉了，不用再問 LiveAvatar。
         # 雲端沒接資料庫時每台機器的記憶體不一樣，查不到也要照樣收
         if (rec is None and STORE.durable) or not avatar_key():
@@ -3790,26 +3936,33 @@ def open_browser(url):
 
 def main():
     base_port = int(ENV.get("PORT") or 8765)
-    stop_old_server(base_port)
+    # 自己的伺服器（APP_MODE=server）：照 HOST、PORT 開，不換埠（被占用就結束，讓 run.sh 重來）、不開瀏覽器。
+    # 本機永遠只開 127.0.0.1（不看 HOST，免得別的程式設的 HOST 讓這台電腦對區網開放）
+    host = ((ENV.get("HOST") or "").strip() or "0.0.0.0") if SERVER_MODE else "127.0.0.1"
+    if not SERVER_MODE:
+        stop_old_server(base_port)
     server = None
-    for port in range(base_port, base_port + 10):
+    for port in [base_port] if SERVER_MODE else range(base_port, base_port + 10):
         try:
-            server = Server(("127.0.0.1", port), Handler)
+            server = Server((host, port), Handler)
             break
         except OSError:
             continue
     if server is None:
-        sys.exit(f"找不到可用的連接埠（{base_port}～{base_port + 9}）")
+        sys.exit(f"找不到可用的連接埠（{base_port}）" if SERVER_MODE else f"找不到可用的連接埠（{base_port}～{base_port + 9}）")
     url = f"http://127.0.0.1:{server.server_port}"
     print("=" * 52)
     print("  AI 理專對練教練 已啟動")
     print(f"  網址：{url}")
+    if SERVER_MODE:
+        hosts = "、".join(sorted(allowed_hosts())) or "（沒有設定 ALLOWED_HOSTS）"
+        print(f"  伺服器模式：{host}:{server.server_port}，對外網址 {hosts}，資料在 {getattr(STORE, 'root', '')}")
     print(f"  AI 大腦：{brain_chain('chat')[0]['label']}")
     print("  關閉這個視窗即可停止")
     print("=" * 52)
     # 先把模型載入顯卡，第一次對話才不用等冷啟動（本機模型是備援時也先暖好）
     warm_brains()
-    if "--no-browser" not in sys.argv:
+    if "--no-browser" not in sys.argv and not SERVER_MODE:
         threading.Timer(0.8, open_browser, args=(url,)).start()
     try:
         server.serve_forever()

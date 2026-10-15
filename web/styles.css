@@ -259,6 +259,7 @@ button { font: inherit; color: inherit; }
 .vc-error { color: var(--red); }
 /* 真人模式（LiveAvatar）：每位客戶挑一張臉 */
 #faceSection .notice { margin-top: 12px; }
+.face-provider { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 12px; padding: 0 4px; font-size: 13px; }
 .face-note { margin: 12px 0 0; }
 .face-note:empty { display: none; }
 .face-note .link { font-size: 13px; text-decoration: underline; text-underline-offset: 3px; }

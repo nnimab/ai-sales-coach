@@ -42,7 +42,7 @@ ssh_pod() {
     -o ConnectTimeout=20 -o LogLevel=ERROR "root@$IP" "$@"
 }
 
-FILES="$(ls *.py) web $(ls scenarios/*.json) tools/runpod $(ls face/*_idle.mp4 face/*.webp face/*.jpg face/*.png 2>/dev/null)"
+FILES="$(ls *.py) web $(ls scenarios/*.json) tools/runpod $(ls face/*_idle.mp4 face/*.webp face/*.jpg face/*.png 2>/dev/null || true)"
 for f in .env voices.json profile.json; do
   case " $FILES " in *" $f "*) echo "不應該送 $f" >&2; exit 1 ;; esac
 done

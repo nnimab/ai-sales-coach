@@ -41,8 +41,8 @@ test('PcmBatcher：第一包小一點、之後固定大小，太大就切', () =
   assert.deepEqual(b.flush(), []);
   assert.equal(new FaceAudio.PcmBatcher(5, 7).first, 4); // 一包一定是完整的 16-bit 樣本
   const d = new FaceAudio.PcmBatcher();
-  assert.equal(d.first, 28800); // 官方建議：第一包約 0.6 秒
-  assert.equal(d.next, 48000); // 之後約 1 秒
+  assert.equal(d.first, 9600); // 第一包約 0.2 秒：越小客戶越早開口
+  assert.equal(d.next, 24000); // 之後約 0.5 秒
   assert.ok(d.next * (4 / 3) < 1024 * 1024); // base64 後也遠低於 1 MB
 });
 
@@ -172,18 +172,17 @@ test('connected 之前不送任何指令', async () => {
 
 // ------------------------------------------------------------------ 講話、封口、插話
 
-test('第一包 0.6 秒、之後 1 秒，同一句用同一個 event_id，講完一定封口', async () => {
+test('第一包 0.2 秒、之後 0.5 秒，同一句用同一個 event_id，講完一定封口', async () => {
   const h = await connected();
   const id = h.link.speak(pcm(4800));
   assert.match(id, UUID);
-  for (let i = 0; i < 4; i += 1) h.link.speak(pcm(4800));
-  assert.equal(h.speaks().length, 0); // 0.5 秒：還不夠
+  assert.equal(h.speaks().length, 0); // 0.1 秒：還不夠
   assert.equal(h.link.speak(pcm(4800)), id);
   assert.equal(h.speaks().length, 1);
-  assert.equal(FaceAudio.b64Bytes(h.speaks()[0].audio), 28800);
-  h.link.speak(pcm(48000 + 2400)); // Gemini 一次給很多：切成 1 秒一包，剩下的等一下
+  assert.equal(FaceAudio.b64Bytes(h.speaks()[0].audio), 9600);
+  h.link.speak(pcm(24000 + 2400)); // Gemini 一次給很多：切成 0.5 秒一包，剩下的等一下
   assert.equal(h.speaks().length, 2);
-  assert.equal(FaceAudio.b64Bytes(h.speaks()[1].audio), 48000);
+  assert.equal(FaceAudio.b64Bytes(h.speaks()[1].audio), 24000);
   await sleep(40); // 等不到新的聲音：剩下的先送
   assert.equal(h.speaks().length, 3);
   assert.equal(FaceAudio.b64Bytes(h.speaks()[2].audio), 2400);
@@ -193,20 +192,20 @@ test('第一包 0.6 秒、之後 1 秒，同一句用同一個 event_id，講完
   assert.deepEqual(sent.map((m) => m.type), ['agent.speak', 'agent.speak', 'agent.speak', 'agent.speak', 'agent.speak_end']);
   assert.ok(sent.every((m) => m.event_id === id));
   assert.ok(h.link.busy); // 封口了，但真人還沒講完
-  const next = h.link.speak(pcm(28800));
+  const next = h.link.speak(pcm(9600));
   assert.notEqual(next, id); // 下一句換新的
-  assert.equal(FaceAudio.b64Bytes(h.speaks().at(-1).audio), 28800); // 第一包重新算
+  assert.equal(FaceAudio.b64Bytes(h.speaks().at(-1).audio), 9600); // 第一包重新算
   h.link.close();
 });
 
 test('聲音來得慢：最多等 flushMs 就送，不會一直往後延', async () => {
   const h = await connected({ flushMs: 60 });
-  h.link.speak(pcm(4800));
+  h.link.speak(pcm(2400));
   await sleep(35);
-  h.link.speak(pcm(4800)); // 不重新計時
+  h.link.speak(pcm(2400)); // 不重新計時
   await sleep(40);
   assert.equal(h.speaks().length, 1);
-  assert.equal(FaceAudio.b64Bytes(h.speaks()[0].audio), 9600);
+  assert.equal(FaceAudio.b64Bytes(h.speaks()[0].audio), 4800);
   h.link.close();
 });
 
@@ -235,7 +234,7 @@ test('開始、講完的通知對得上這句才算；講完就換成在聽', as
 
 test('插話：先停送、丟掉還沒送的，再送 agent.interrupt，然後換成在聽', async () => {
   const h = await connected();
-  const id = h.link.speak(pcm(28800));
+  const id = h.link.speak(pcm(9600));
   h.link.speak(pcm(4800)); // 這段還在湊
   h.link.interrupt();
   await sleep(40);

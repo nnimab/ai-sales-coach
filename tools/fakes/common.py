@@ -1,15 +1,18 @@
-"""假服務共用的小工具（只用標準函式庫）：在 127.0.0.1 的 9100～9199 開伺服器、簽 RS256 JWT、依 JSON schema 產生假資料。"""
+"""假服務共用的小工具（只用標準函式庫）：在 127.0.0.1 的 9100～9199 開伺服器、簽 RS256 JWT、依 JSON schema 產生假資料。
+那一段埠被別的程式占著時，可以用環境變數 FAKE_PORT_BASE 換一段（例如 9400 → 9400～9499）。"""
 
 import base64
 import hashlib
 import json
+import os
 import socket
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs
 
-PORT_RANGE = range(9100, 9200)
+_PORT_BASE = int(os.environ.get("FAKE_PORT_BASE") or 9100)
+PORT_RANGE = range(_PORT_BASE, _PORT_BASE + 100)
 _DIGEST_INFO_SHA256 = bytes.fromhex("3031300d060960864801650304020105000420")
 
 
@@ -20,7 +23,7 @@ class Server(ThreadingHTTPServer):
 
 
 def free_port(exclude=()):
-    """9100～9199 裡第一個能綁的埠（給子程序用；自己開伺服器請用 serve）。"""
+    """PORT_RANGE（預設 9100～9199）裡第一個能綁的埠（給子程序用；自己開伺服器請用 serve）。"""
     for port in PORT_RANGE:
         if port in exclude:
             continue
@@ -32,11 +35,11 @@ def free_port(exclude=()):
         finally:
             s.close()
         return port
-    raise RuntimeError("9100～9199 沒有空的埠")
+    raise RuntimeError(f"{PORT_RANGE.start}～{PORT_RANGE.stop - 1} 沒有空的埠")
 
 
 def serve(handler_cls, port=None, state=None):
-    """在背景執行緒開伺服器；port 不給就從 9100 往上找。回傳 server（server.url、server.stop()）。"""
+    """在背景執行緒開伺服器；port 不給就從 PORT_RANGE 的開頭往上找。回傳 server（server.url、server.stop()）。"""
     ports = [port] if port else list(PORT_RANGE)
     last = None
     for p in ports:

@@ -314,6 +314,7 @@ function applyStatus(s) {
   state.providerReady = s.ready;
   state.providerLabel = s.label;
   state.live = !!s.live;
+  state.face = state.live && !!s.avatar?.on; // 真人模式：只用在即時通話
   state.coachParallel = !!s.coach_parallel;
   updatePlanTag();
   hostedCopy();
@@ -558,6 +559,7 @@ const Brain = (() => {
     let desc = '關閉時，客戶用文字大腦回話再念出來；講完停一下才會送出。';
     if (!avail) desc = s.live_reason || '要先設定 Gemini 金鑰才能開。';
     else if (s.live_enabled) desc = '通話用 Gemini Live：可以直接插話，客戶會停下來聽。教練和評分仍用上面的文字大腦。';
+    if (s.live_enabled && s.avatar?.enabled) desc += '真人模式已開（在「聲音設定」調整）。';
     $('#liveDesc').textContent = desc;
   }
 
@@ -1079,7 +1081,7 @@ async function renderVoices() {
       <div class="vc-picker hidden"></div>
     </div>`).join('');
 
-  $$('.voice-card').forEach((card) => {
+  $$('.voice-card', $('#voiceCustomers')).forEach((card) => { // 只找聲音的卡片：下面真人模式的卡片長得一樣
     const c = t.customers.find((x) => x.avatar === card.dataset.avatar);
     card.querySelector('[data-act="test"]').addEventListener('click', () => {
       if (serverMode) {
@@ -1093,6 +1095,7 @@ async function renderVoices() {
     });
     card.querySelector('[data-act="pick"]')?.addEventListener('click', () => togglePicker(card, c));
   });
+  Faces.render(t);
 }
 
 function voiceRow(v, c) {
@@ -1202,6 +1205,164 @@ $('#ttsModel').addEventListener('change', async (e) => {
   try { await api('/api/tts/config', { model: e.target.value }); } catch (err) { toast(esc(err.message), 'error'); }
   renderVoices();
 });
+
+// ------------------------------------------------------------------ 真人模式設定（HeyGen LiveAvatar）：開關、金鑰、每位客戶的臉孔
+
+const Faces = (() => {
+  let list = null; // 臉孔清單（伺服器也有快取）；換金鑰後重抓
+  let keyOpen = false; // 已經有金鑰，但想換一把
+  const STEPS = [
+    '到 <a href="https://app.liveavatar.com/developers" target="_blank" rel="noopener">app.liveavatar.com/developers</a> 註冊並登入',
+    '複製頁面上的 API Key',
+    '把金鑰貼到下面，按「儲存」',
+  ];
+
+  // 預覽圖載入失敗（網址過期之類）：換成灰色方塊，不顯示破圖
+  const hideBroken = (root) => $$('img', root).forEach((img) => img.addEventListener('error', () => {
+    if (img.closest('.face-tile')) img.replaceWith(document.createElement('i'));
+    else img.remove();
+  }, { once: true }));
+
+  function render(t) {
+    const a = t.avatar;
+    $('#faceSection').classList.toggle('hidden', !a);
+    if (!a) return; // 舊版伺服器沒有真人模式
+    const sw = $('#faceSwitch');
+    sw.checked = a.enabled;
+    // 不能用但還開著（例如即時通話關了）：還是讓人關掉
+    sw.disabled = !state.canAdmin || (!a.available && !a.enabled);
+    $('#faceDesc').textContent = !a.available ? a.reason
+      : a.enabled ? '即時通話時，客戶用真人影像出現，嘴型跟著聲音動；連不上就自動改回語音。'
+        : '打開後，即時通話的客戶會用 HeyGen 的真人影像出現。一般通話不會用到。';
+
+    const env = a.key_source === 'env';
+    const showKey = !a.key_set || (keyOpen && !env);
+    $('#faceKeyBox').classList.toggle('hidden', !showKey);
+    if (showKey) {
+      $('#faceKeySteps').innerHTML = (env ? [
+        ...STEPS.slice(0, -1),
+        `到 Vercel 專案 → Settings → Environment Variables，新增 <code>${esc(a.env_name)}</code>，值貼上金鑰`,
+        '到 Deployments → 最新一筆右邊的「⋯」→ Redeploy，完成後重新整理這一頁',
+      ] : STEPS).map((s) => `<li>${s}</li>`).join('');
+      $('#faceKeyRow').classList.toggle('hidden', env);
+      $('#faceKeyNote').textContent = env ? '雲端版的金鑰只放在 Vercel 的環境變數，網頁上不能貼。'
+        : '金鑰只會存在這台電腦的 .env 檔案裡，不會上傳到別的地方。';
+    }
+    $('#faceSandbox').classList.toggle('hidden', !a.sandbox);
+    const change = a.key_set && !env && state.canAdmin ? ' <button class="link" type="button" data-act="key">換金鑰</button>' : '';
+    $('#faceNote').innerHTML = (a.key_set
+      ? '免費版每月 10 分鐘，可以用公開臉孔；自己的照片做的臉孔要付費方案。一定要戴耳機。' : '') + change;
+
+    const box = $('#faceCustomers');
+    box.classList.toggle('hidden', !a.key_set);
+    if (!a.key_set) return;
+    box.innerHTML = t.customers.map((c) => {
+      const f = c.face;
+      const label = a.sandbox ? 'Wayne（測試模式）' : f?.name || '還沒挑';
+      const thumb = !a.sandbox && f?.preview_url ? `<img src="${esc(f.preview_url)}" alt="" loading="lazy">` : '';
+      return `<div class="voice-card" data-avatar="${esc(c.avatar)}">
+        <div class="vc-head">
+          <div class="vc-avatar">${avatarSVG(c.avatar)}</div>
+          <div class="vc-who"><b>${esc(c.name)}</b><span>${c.gender === 'male' ? '男' : '女'} · ${esc(c.age)} 歲</span></div>
+          <div class="vc-current face-current">${thumb}<div><span>真人臉孔</span><b class="${f || a.sandbox ? '' : 'warn-text'}">${esc(label)}</b></div></div>
+          <button class="pill ghost" type="button" data-act="pick">更換${icon('chevronDown')}</button>
+        </div>
+        <div class="vc-picker hidden"></div>
+      </div>`;
+    }).join('');
+    hideBroken(box);
+    $$('.voice-card', box).forEach((card) => {
+      const c = t.customers.find((x) => x.avatar === card.dataset.avatar);
+      card.querySelector('[data-act="pick"]').addEventListener('click', () => picker(card, c, a));
+    });
+  }
+
+  function tile(v, c) {
+    const on = c.face?.id === v.id;
+    const img = v.preview_url ? `<img src="${esc(v.preview_url)}" alt="" loading="lazy">` : '<i></i>';
+    return `<button class="face-tile${on ? ' current' : ''}" type="button" data-id="${esc(v.id)}" title="${esc(v.name)}" aria-pressed="${on}">${img}<span>${esc(v.name)}</span></button>`;
+  }
+
+  async function picker(card, c, a) {
+    const box = card.querySelector('.vc-picker');
+    if (!box.classList.contains('hidden')) { box.classList.add('hidden'); return; }
+    box.classList.remove('hidden');
+    box.innerHTML = '<div class="vc-loading">載入臉孔清單中…</div>';
+    try {
+      if (!list) list = (await api('/api/avatar/list')).avatars || [];
+    } catch (err) {
+      box.innerHTML = `<div class="vc-error">${esc(err.message)}</div>`;
+      return;
+    }
+    const mine = list.filter((v) => v.custom);
+    const pub = list.filter((v) => !v.custom);
+    const tabs = [['mine', '我的臉孔', mine], ['public', '公開臉孔', pub]];
+    const first = mine.length ? 'mine' : 'public';
+    const hint = a.sandbox ? '<p class="vc-hint">現在是測試模式，通話一律用 Wayne；這裡挑的臉孔關掉測試模式後才會用。</p>' : '';
+    box.innerHTML = hint + `<div class="vc-tabs">${tabs.map(([k, label, arr]) =>
+      `<button type="button" class="${k === first ? 'on' : ''}" data-tab="${k}">${esc(label)} <span>${arr.length}</span></button>`).join('')}</div>`
+      + tabs.map(([k, , arr]) => `<div class="face-grid${k === first ? '' : ' hidden'}" data-list="${k}">${arr.length
+        ? arr.map((v) => tile(v, c)).join('')
+        : `<div class="vc-empty">${k === 'mine' ? '還沒有自己的臉孔：要在 LiveAvatar 網站用照片建立（付費方案）。' : '沒有公開臉孔。'}</div>`}</div>`).join('');
+    hideBroken(box);
+    $$('.vc-tabs button', box).forEach((b) => b.addEventListener('click', () => {
+      $$('.vc-tabs button', box).forEach((x) => x.classList.toggle('on', x === b));
+      $$('.face-grid', box).forEach((l) => l.classList.toggle('hidden', l.dataset.list !== b.dataset.tab));
+    }));
+    $$('.face-tile', box).forEach((b) => b.addEventListener('click', async () => {
+      const v = list.find((x) => x.id === b.dataset.id);
+      if (!v || c.face?.id === v.id) return;
+      b.disabled = true;
+      try {
+        state.tts = await api('/api/avatar/assign', { avatar: c.avatar, avatar_id: v.id, name: v.name, preview_url: v.preview_url });
+        toast(`已幫${esc(c.name)}換成「${esc(v.name)}」`, 'info', 2500);
+        renderVoices();
+      } catch (err) {
+        b.disabled = false;
+        toast(esc(err.message), 'error', 7000, '換臉孔失敗');
+      }
+    }));
+  }
+
+  $('#faceSwitch').addEventListener('change', async (e) => {
+    const sw = e.target;
+    const on = sw.checked;
+    sw.disabled = true;
+    try {
+      await api('/api/avatar/config', { enabled: on });
+      toast(on ? '已開啟真人模式，下一通即時通話開始' : '已關閉真人模式', 'info', 2500);
+    } catch (err) {
+      sw.checked = !on;
+      toast(esc(err.message), 'error', 6000, '切換失敗');
+    }
+    renderVoices();
+    refreshStatus(); // 下一通電話要不要用真人模式，看的是狀態
+  });
+
+  $('#faceNote').addEventListener('click', (e) => {
+    if (!e.target.closest('[data-act="key"]')) return;
+    keyOpen = !keyOpen;
+    renderVoices();
+  });
+
+  $('#btnFaceKey').addEventListener('click', async () => {
+    const key = $('#faceKeyInput').value.trim();
+    if (!key) { $('#faceKeyInput').focus(); return; }
+    try {
+      await api('/api/avatar/key', { key });
+      $('#faceKeyInput').value = '';
+      list = null;
+      keyOpen = false;
+      toast('金鑰已儲存', 'info', 2500);
+    } catch (err) {
+      toast(esc(err.message), 'error', 8000, '儲存失敗');
+    }
+    renderVoices();
+    refreshStatus();
+  });
+
+  return { render };
+})();
 
 // ------------------------------------------------------------------ 我的背景（業務自己的姓名、職稱、公司規定）
 
@@ -2521,6 +2682,14 @@ const LiveCall = (() => {
   let dropStale = false; // 打字打斷客戶後，舊那段回話還在路上的聲音和字幕要丟掉
   let staleTimer = 0;
   let micGen = 0; // 每次開、關麥克風就 +1：晚到的麥克風知道自己已經過期
+  // 真人模式（LiveAvatar）：響鈴時就開始連；接通後客戶的聲音交給真人影像講，這裡不自己播
+  let face = null;
+  let faceOn = false;
+  let faceVideo = null;
+  let quietTimer = 0; // 萬一沒收到真人「講完了」，估計的時間到了也換成在聽
+
+  // 算「業務聽到幾成」用的時鐘：自己播用 AudioContext 的時間，真人模式用真人開口的時間（都是秒）
+  const clock = () => (faceOn ? performance.now() / 1000 : outCtx().currentTime);
 
   // 業務講完、逐字稿也停了，就先把這句放進逐字稿（不用等客戶開口），教練和合規檢查可以早點開始
   function commitSoon(ms = 350) {
@@ -2590,6 +2759,79 @@ const LiveCall = (() => {
     retries = 0;
     voice = '';
     connect();
+    if (state.face) openFace(s); // 和 Gemini 的通行證同時要，接起來就看得到人
+  }
+
+  function openFace(s) {
+    faceVideo = Object.assign(document.createElement('video'), { autoplay: true, playsInline: true, muted: true });
+    faceVideo.className = 'face-video';
+    // 真人的聲音只從 LiveKit 來：放進頁面（看不到）比較不會被瀏覽器省略，收掉時一起拿走
+    const audio = Object.assign(document.createElement('audio'), { autoplay: true, hidden: true });
+    document.body.appendChild(audio);
+    face = FaceLink.open({
+      avatar: s.customer.avatar, api, video: faceVideo, audio,
+      onStart: faceStarted, onEnd: faceEnded, onFail: dropFace,
+      onAudioBlocked: () => toast('瀏覽器擋住了真人的聲音，點一下畫面就會開始播。', 'warn', 6000),
+    });
+  }
+
+  // 通話畫面中間：真人影像換掉畫的頭像；收掉時換回來
+  function showFace(on) {
+    const stage = $('#avatarStage');
+    if (on === stage.classList.contains('face')) return;
+    stage.classList.toggle('face', on);
+    const box = $('#avatarBox');
+    if (on) box.replaceChildren(faceVideo);
+    else if (state.scenario) box.innerHTML = avatarSVG(state.scenario.customer.avatar);
+  }
+
+  // 真人連不上或中途斷了：這通電話照常講，客戶的聲音改回這裡自己播
+  function dropFace(why) {
+    const f = face;
+    if (!f) return;
+    const c = cust;
+    const said = c?.start ? (performance.now() / 1000 - c.start) * FaceAudio.BYTES_PER_SEC : 0;
+    face = null;
+    faceOn = false;
+    f.close();
+    showFace(false);
+    toast(esc(why), 'warn', 8000, '真人模式連不上，這通改用語音');
+    showVoiceName();
+    if (!c || !c.pcm) return;
+    // 這句還沒講完的部分接著在這裡播（時間改用本機的時鐘重算）
+    const rest = FaceAudio.pcmTail(c.pcm, said);
+    Object.assign(c, { start: 0, end: 0, sent: 0, utt: '', pcm: null });
+    if (rest && active) play(rest);
+  }
+
+  // 真人開口：從這時候（加上聲音傳過來的時間）算業務聽到多少；用 LiveAvatar 的時間，不用送出的時間
+  function faceStarted(id) {
+    if (cust && cust.utt === id && !cust.start) {
+      cust.start = performance.now() / 1000 + FaceAudio.HEARD_LAG_SEC;
+      cust.end = cust.start + cust.sent / FaceAudio.BYTES_PER_SEC;
+    }
+  }
+
+  // 和自己播的時候一樣：真人講完、客戶也沒有下一句，就換成「在聽你說」
+  function faceEnded() {
+    if (!cust && active && faceOn && !face.busy) {
+      setCustomerState('listening');
+      setCaption(undefined, true);
+    }
+  }
+
+  // Gemini 這一輪講完：剩下的聲音送給真人、封口
+  function faceTurnDone() {
+    face.endTurn();
+    const c = cust;
+    const left = c ? (c.start ? c.end - clock() : c.sent / FaceAudio.BYTES_PER_SEC) : 0;
+    clearTimeout(quietTimer);
+    quietTimer = setTimeout(() => {
+      if (!cust && active && faceOn) {
+        setCustomerState('listening');
+        setCaption(undefined, true);
+      }
+    }, (Math.max(0, left) + 2) * 1000);
   }
 
   async function start() {
@@ -2597,8 +2839,10 @@ const LiveCall = (() => {
     active = true;
     muted = false;
     const myGen = gen;
-    outCtx(); // 在使用者按下接聽的這一刻建立，瀏覽器才允許出聲
+    outCtx(); // 在使用者按下接聽的這一刻建立，瀏覽器才允許出聲（真人連不上時要改回自己播）
+    face?.unlock();
     setCustomerState('connecting');
+    const faceWait = face ? face.ready.then(() => '', (e) => e.message || '真人模式連不上') : null;
     try {
       await pending;
       if (!ws || ws.readyState !== WebSocket.OPEN) throw new Error('連線已經斷了');
@@ -2608,6 +2852,17 @@ const LiveCall = (() => {
       return;
     }
     if (!active || myGen !== gen) return;
+    if (faceWait) {
+      // 真人畫面還沒好就再等一下（最多到響鈴後 15 秒），客戶的第一句才不會沒有畫面
+      const why = await faceWait;
+      if (!active || myGen !== gen) return;
+      if (why) dropFace(why);
+      else {
+        faceOn = true;
+        showFace(true);
+        if (face.sandbox) toast('測試模式：真人影像大約 1～2 分鐘後結束，之後改用語音。', 'info', 6000);
+      }
+    }
     sendTurn('（電話接通）');
     setCustomerState('thinking');
     showVoiceName();
@@ -2647,7 +2902,10 @@ const LiveCall = (() => {
     if (stale) return;
     (sc.modelTurn?.parts || []).forEach((p) => { if (p.inlineData?.data) play(p.inlineData.data); });
     if (sc.outputTranscription?.text) custSays(sc.outputTranscription.text);
-    if (sc.turnComplete) custDone(false);
+    if (sc.turnComplete) {
+      if (faceOn) faceTurnDone();
+      custDone(false);
+    }
   }
 
   async function onClosed(e) {
@@ -2742,11 +3000,11 @@ const LiveCall = (() => {
     if (!c) return;
     cust = null;
     let text = liveText(c.text).trim();
-    if (interrupted && text && c.start) {
+    // c.sent：真人模式已經送出的聲音；送了但真人還沒開口，業務一個字都還沒聽到
+    if (interrupted && text && (c.start || c.sent)) {
       // 字幕比聲音早到很多：用大約每秒 6 個字估整句要講多久，只留下業務真的聽到的部分
       const chars = [...text];
-      const total = Math.max(c.end - c.start, chars.length / 6);
-      const heard = Math.min(1, Math.max(0, (outCtx().currentTime - c.start) / total));
+      const heard = FaceAudio.heardShare(c.start, c.end, clock(), chars.length);
       text = `${chars.slice(0, Math.max(1, Math.round(chars.length * heard))).join('')}…`;
     }
     if (text) {
@@ -2804,6 +3062,15 @@ const LiveCall = (() => {
   // 客戶的聲音一段一段接著排進去播（24kHz、16-bit PCM）
   function play(b64) {
     const c = custTurn();
+    if (faceOn) {
+      // 真人模式：聲音交給真人影像（它的聲音從 LiveKit 傳回來），這裡不播也不動嘴巴。
+      // 留一份這句的聲音：真人中途斷線時，沒講完的部分改在這裡播
+      c.utt = face.speak(b64);
+      c.sent = (c.sent || 0) + FaceAudio.b64Bytes(b64);
+      (c.pcm ||= []).push(b64);
+      if (c.start) c.end = c.start + c.sent / FaceAudio.BYTES_PER_SEC;
+      return;
+    }
     const ctx = outCtx();
     const bin = atob(b64);
     const n = bin.length >> 1;
@@ -2840,6 +3107,7 @@ const LiveCall = (() => {
   }
 
   function stopPlayback() {
+    if (faceOn) face.interrupt(); // 真人也馬上閉嘴
     sources.forEach((s) => {
       s.onended = null;
       try { s.stop(); } catch { /* 已經停了 */ }
@@ -2902,6 +3170,7 @@ const LiveCall = (() => {
       }
       gate.open = false;
       send({ realtimeInput: { audioStreamEnd: true } });
+      if (faceOn) face.listen(false);
       commitSoon();
       return;
     }
@@ -2911,6 +3180,7 @@ const LiveCall = (() => {
         gate.open = true;
         gate.pre.forEach(sendAudio); // 補上開口前的一小段，第一個字才不會被吃掉
         gate.pre = [];
+        if (faceOn) face.listen(true); // 真人模式：業務開口，真人換成在聽的樣子（它正在講話時不換）
       }
       sendAudio(pcm);
       return;
@@ -2918,6 +3188,7 @@ const LiveCall = (() => {
     if (gate.open) {
       gate.open = false;
       send({ realtimeInput: { audioStreamEnd: true } });
+      if (faceOn) face.listen(false); // 業務講完：真人回到平常的樣子，等客戶回話
       commitSoon(); // 客戶沒接話時，也在講完約 2 秒後把這句放進逐字稿
     }
     gate.pre.push(pcm);
@@ -2961,6 +3232,11 @@ const LiveCall = (() => {
     lastRep = null;
     gate = { open: false, lastLoud: 0, pre: [] };
     stopPlayback();
+    clearTimeout(quietTimer);
+    if (face) face.close(); // 收掉真人畫面（伺服器會請 LiveAvatar 結束，不再扣點數）
+    face = null;
+    faceOn = false;
+    showFace(false);
     stopMic();
     const sock = ws;
     ws = null;
@@ -2974,7 +3250,7 @@ const LiveCall = (() => {
   return {
     prepare, start, stop, toggleMute,
     send: sendText,
-    get voiceName() { return `Gemini Live · ${voice || '預設聲音'}`; },
+    get voiceName() { return `Gemini Live · ${voice || '預設聲音'}${faceOn && face.name ? ` · 真人 ${face.name}` : ''}`; },
   };
 })();
 

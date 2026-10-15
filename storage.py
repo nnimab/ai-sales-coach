@@ -19,7 +19,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 # 網頁上可以改、要記住的設定（本機寫進 .env，雲端寫進 Redis）；金鑰不放這裡
-RUNTIME_KEYS = ("LLM_PROVIDER", "LIVE_ENABLED", "CHATGPT_MODEL", "CHATGPT_COACH_MODEL", "CLOUD_URL")
+RUNTIME_KEYS = ("LLM_PROVIDER", "LIVE_ENABLED", "LIVEAVATAR_ENABLED", "CHATGPT_MODEL", "CHATGPT_COACH_MODEL", "CLOUD_URL")
 _CACHE_EXT = {"audio/wav": ".wav", "audio/mpeg": ".mp3"}
 _NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,80}$")  # 登入資料的名稱會變成檔名，不能有路徑字元
 _SID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$")

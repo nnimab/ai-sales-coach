@@ -257,6 +257,22 @@ button { font: inherit; color: inherit; }
 .vr-main span { display: block; font-size: 12px; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .vc-loading, .vc-empty, .vc-error { padding: 10px 0; font-size: 13.5px; color: var(--text-3); }
 .vc-error { color: var(--red); }
+/* 真人模式（LiveAvatar）：每位客戶挑一張臉 */
+#faceSection .notice { margin-top: 12px; }
+.face-note { margin: 12px 0 0; }
+.face-note:empty { display: none; }
+.face-note .link { font-size: 13px; text-decoration: underline; text-underline-offset: 3px; }
+.face-current { display: flex; align-items: center; gap: 10px; }
+.face-current img { width: 36px; height: 36px; flex: none; border-radius: 10px; object-fit: cover; background: var(--panel-2); }
+.warn-text { color: var(--amber); }
+.face-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)); gap: 8px; }
+.face-grid .vc-empty { grid-column: 1 / -1; }
+.face-tile { display: flex; flex-direction: column; gap: 6px; min-width: 0; padding: 6px; border: none; border-radius: 14px; background: var(--panel); text-align: left; cursor: pointer; }
+.face-tile:hover { background: var(--panel-2); }
+.face-tile.current { box-shadow: inset 0 0 0 1px var(--green); }
+.face-tile:disabled { opacity: 0.5; cursor: default; }
+.face-tile img, .face-tile i { display: block; width: 100%; aspect-ratio: 1; border-radius: 10px; object-fit: cover; background: var(--panel-2); }
+.face-tile span { padding: 0 2px; font-size: 12.5px; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .key-steps code, .notice code { padding: 1px 6px; border-radius: 6px; background: var(--panel-2); font: 13px/1.5 ui-monospace, "Cascadia Mono", Consolas, monospace; }
 
 /* ---------- AI 大腦 ---------- */
@@ -431,6 +447,11 @@ a.pill { text-decoration: none; }
 .orb.audio-live .mouth-closed { opacity: 1; }
 .orb.audio-live.mouth-on .mouth-open { opacity: 1; }
 .orb.audio-live.mouth-on .mouth-closed { opacity: 0; }
+/* 真人模式：畫的頭像換成真人影像（LiveAvatar），嘴型由影像本身負責 */
+.orb.face { width: min(340px, 100%); height: auto; aspect-ratio: 1; }
+.orb.face .halo { display: none; }
+.orb.face .orb-avatar { width: 100%; height: 100%; border-radius: 24px; transform: none; background: var(--panel); }
+.face-video { display: block; width: 100%; height: 100%; object-fit: cover; }
 .av-head { transform-box: view-box; transform-origin: 100px 150px; }
 .speaking .av-head { animation: bob 2.6s ease-in-out infinite; }
 @keyframes bob { 0%, 100% { transform: rotate(0); } 25% { transform: rotate(1.2deg); } 75% { transform: rotate(-1deg); } }
@@ -700,6 +721,7 @@ mark.bad { padding: 0 2px; border-radius: 4px; background: var(--mark); color: i
 @media (max-height: 800px) {
   .orb { width: 150px; height: 150px; }
   .orb-avatar { width: 126px; height: 126px; }
+  .orb.face { width: min(240px, 100%); }
   .stage-name { margin-top: 14px; font-size: 20px; }
   /* 不用 min-height: 0：字幕會被壓得比字還矮，疊到提示卡上 */
   .caption { margin-top: 10px; font-size: 17px; min-height: auto; }
@@ -748,6 +770,7 @@ mark.bad { padding: 0 2px; border-radius: 4px; background: var(--mark); color: i
 }
 
 @media (max-width: 480px) {
+  .face-current img { display: none; } /* 手機放不下：名字就夠了，挑臉孔時看得到照片 */
   .call-actions { gap: 4px; }
   .timer { padding: 0 2px; font-size: 13px; }
   .call-actions .seg button { padding: 0 10px; }

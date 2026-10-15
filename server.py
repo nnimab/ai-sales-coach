@@ -22,6 +22,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
 import chatgpt_brain
+import liveavatar
 import storage
 import tts
 import websession
@@ -108,7 +109,7 @@ def load_env():
 ENV_PREFIXES = (
     "LLM_", "OPENAI_", "AZURE_OPENAI_", "ELEVENLABS_", "GEMINI_", "YATING_", "TTS_",
     "CHATGPT_", "APP_", "AUTH_", "ADMIN_", "PROFILE_", "BRAIN_", "LIVE_", "STORE_", "KV_", "UPSTASH_",
-    "OLLAMA_", "VERCEL", "SESSION_",
+    "OLLAMA_", "VERCEL", "SESSION_", "LIVEAVATAR_",
 )
 
 
@@ -644,6 +645,7 @@ def synthesize(pid, voice_id, text):
 def tts_status():
     cfg = voice_cfg()
     pid = tts_provider_id(cfg)
+    faces = avatar_faces(cfg)
     customers, seen = [], set()
     scenarios = load_scenarios().values()
     # 聲音跟著頭像走：同一個頭像的客戶共用一張卡片，名字一起列出來
@@ -664,7 +666,7 @@ def tts_status():
             voice = {"voice_id": fb, "name": f"{fb}（暫用）"}
         row = {
             "avatar": c["avatar"], "name": "、".join(dict.fromkeys(names[c["avatar"]])), "age": c.get("age"), "gender": gender,
-            "opening": sc.get("opening_line", ""), "voice": voice,
+            "opening": sc.get("opening_line", ""), "voice": voice, "face": faces.get(c["avatar"]),
         }
         if pid == "gemini":
             row["brief"] = (voice or {}).get("brief") or voice_brief(c)
@@ -681,6 +683,7 @@ def tts_status():
         # 雲端的金鑰只能設在 Vercel 的環境變數，畫面改成教學步驟
         "key_source": "env" if ON_CLOUD else "file",
         "env_names": dict(KEY_NAMES),
+        "avatar": avatar_info(),
     }
 
 
@@ -2031,6 +2034,92 @@ def live_setup(sc, handle=""):
     }
 
 
+# ---------------------------------------------------------------- 真人模式（HeyGen LiveAvatar）
+
+# 即時通話時，客戶用真人影像出現：聲音還是 Gemini Live 的，瀏覽器把它轉給 LiveAvatar 對嘴。
+# 伺服器只負責開、關工作階段和列出臉孔，金鑰不會給瀏覽器
+AVATAR_KEY_NAME = "LIVEAVATAR_API_KEY"
+# LiveAvatar 沒公開金鑰格式：比其他服務多收 + / =（base64 會用到），一樣不能有空白和換行
+_AV_KEY_RE = re.compile(r"^[A-Za-z0-9_\-.:+/=]{8,300}$")
+_UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+_PREVIEW_RE = re.compile(r"^https://[^\s\"'<>\\]{1,800}$")
+AVATAR_MAX_SEC = 20 * 60  # 一個真人畫面最多開 20 分鐘：忘了掛斷或分頁當掉，也不會一直扣點數
+AVATAR_STARTS = 20  # 10 分鐘內最多開幾次（擋程式出錯一直重開）
+AVATAR_LIST_TTL = 600
+AVSESS = "avsess:"  # 這裡開的工作階段是誰的：結束時核對，也讓重複結束不用再問 LiveAvatar
+_av_list = {"at": 0.0, "sig": "", "rows": []}
+_av_list_lock = threading.Lock()
+
+
+def _on(value):
+    return (value or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def avatar_key():
+    return ENV.get(AVATAR_KEY_NAME) or ""
+
+
+def avatar_sandbox():
+    """測試模式：不扣點數，但只能用 Wayne，大約 1～2 分鐘就結束。"""
+    return _on(ENV.get("LIVEAVATAR_SANDBOX"))
+
+
+def avatar_enabled():
+    return _on(setting("LIVEAVATAR_ENABLED"))
+
+
+def avatar_client():
+    return liveavatar.LiveAvatar(avatar_key(), ENV.get("LIVEAVATAR_BASE_URL") or liveavatar.BASE)
+
+
+def avatar_problem():
+    """真人模式現在為什麼不能用（一句話）；能用就回空字串。"""
+    if not avatar_key():
+        if ON_CLOUD:
+            return f"還沒設定 LiveAvatar 金鑰：請到 Vercel 新增 {AVATAR_KEY_NAME} 後 Redeploy"
+        return "還沒設定 LiveAvatar 金鑰：請在「聲音設定」的真人模式貼上"
+    if not (live_enabled() and PROVIDERS["gemini"]["configured"]):
+        return "真人模式要配合即時通話（Gemini Live）：請先到「AI 大腦」打開"
+    return ""
+
+
+def avatar_info():
+    """給畫面看的狀態：有沒有金鑰、開關、測試模式；不含金鑰本身。"""
+    problem = avatar_problem()
+    enabled = avatar_enabled()
+    return {
+        "enabled": enabled, "on": enabled and not problem, "available": not problem, "reason": problem,
+        "key_set": bool(avatar_key()), "sandbox": avatar_sandbox(),
+        "key_source": "env" if ON_CLOUD else "file", "env_name": AVATAR_KEY_NAME,
+    }
+
+
+def avatar_faces(cfg=None):
+    """每個頭像配的真人臉孔 {頭像: {id, name, preview_url}}，跟聲音一起存在 voices（臉孔也跟著頭像走）。"""
+    cfg = voice_cfg() if cfg is None else cfg
+    faces = cfg.get("liveavatar")
+    return faces if isinstance(faces, dict) else {}
+
+
+def avatar_list():
+    """臉孔清單：自己帳號的加上公開的；10 分鐘內再看不重問（換金鑰就重抓）。"""
+    sig = hashlib.sha256(avatar_key().encode("utf-8")).hexdigest()[:16]
+    with _av_list_lock:
+        if _av_list["sig"] == sig and time.monotonic() - _av_list["at"] < AVATAR_LIST_TTL:
+            return list(_av_list["rows"])
+    rows = avatar_client().avatars()
+    with _av_list_lock:
+        _av_list.update(at=time.monotonic(), sig=sig, rows=rows)
+    return list(rows)
+
+
+def avatar_error_text(e):
+    if e.kind == "key":
+        where = f"請到 Vercel 檢查 {AVATAR_KEY_NAME} 後 Redeploy" if ON_CLOUD else "請到「聲音設定」重新貼一次"
+        return f"{e}：{where}"
+    return str(e)
+
+
 # ---------------------------------------------------------------- 狀態
 
 
@@ -2197,6 +2286,7 @@ def status():
         "live_reason": "" if gemini_ok else (
             "還沒設定 Gemini 金鑰：請到 Vercel 新增 GEMINI_API_KEY 後 Redeploy" if ON_CLOUD
             else "還沒設定 Gemini 金鑰：請到「聲音設定」選 Gemini 貼上金鑰"),
+        "avatar": avatar_info(),
         "chatgpt": chatgpt_info(acct),
         "storage": storage_info(),
         "can_admin": is_admin(),
@@ -2457,6 +2547,7 @@ ADMIN_ROUTES = {
     "/api/provider", "/api/live/config", "/api/chatgpt/config", "/api/chatgpt/cloud",
     "/api/editor/save", "/api/editor/delete", "/api/editor/draft",
     "/api/tts/config", "/api/tts/key", "/api/tts/assign", "/api/tts/design",
+    "/api/avatar/config", "/api/avatar/key", "/api/avatar/assign",
 }
 
 
@@ -2507,6 +2598,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, tts_voices(avatar))
             except tts.TTSError as e:
                 return self._json(502, {"error": str(e)})
+        if path == "/api/avatar/list":
+            return self._avatar_list()
         if path == "/api/chatgpt/models":
             return self._chatgpt_models()
         if path == "/auth/chatgpt/start":
@@ -2534,6 +2627,11 @@ class Handler(BaseHTTPRequestHandler):
             "/api/tts/design": self._tts_design,
             "/api/live/token": self._live_token,
             "/api/live/config": self._live_config,
+            "/api/avatar/session": self._avatar_session,
+            "/api/avatar/stop": self._avatar_stop,
+            "/api/avatar/config": self._avatar_config,
+            "/api/avatar/key": self._avatar_key,
+            "/api/avatar/assign": self._avatar_assign,
             "/api/profile": self._profile,
             "/api/editor/list": self._editor_list,
             "/api/editor/get": self._editor_get,
@@ -3194,6 +3292,127 @@ class Handler(BaseHTTPRequestHandler):
     def _warmup(self, body):
         warm_brains()  # 雲端什麼都不做
         self._json(200, {"ok": True})
+
+    # ---- 真人模式（LiveAvatar）
+
+    def _avatar_list(self):
+        if not avatar_key():
+            return self._json(400, {"error": avatar_problem()})
+        try:
+            rows = avatar_list()
+        except liveavatar.AvatarError as e:
+            self.log_message("LiveAvatar 臉孔清單失敗：%s", e.detail or e)
+            return self._json(502, {"error": avatar_error_text(e)})
+        self._json(200, {"avatars": rows, "sandbox": avatar_sandbox(),
+                         "sandbox_avatar": {"id": liveavatar.SANDBOX_AVATAR, "name": liveavatar.SANDBOX_NAME}})
+
+    def _avatar_config(self, body):
+        enabled = body.get("enabled")
+        if not isinstance(enabled, bool):
+            return self._json(400, {"error": "資料格式錯誤"})
+        problem = avatar_problem()
+        if enabled and problem:
+            return self._json(400, {"error": problem})
+        set_setting("LIVEAVATAR_ENABLED", "1" if enabled else "0")
+        self._json(200, tts_status())
+
+    def _avatar_key(self, body):
+        if ON_CLOUD:
+            # 雲端不能改檔案：金鑰只能設在 Vercel 的環境變數（跟語音金鑰一樣）
+            return self._json(409, {"error": f"請到 Vercel → Settings → Environment Variables 新增 {AVATAR_KEY_NAME} 後 Redeploy",
+                                    "env_name": AVATAR_KEY_NAME, "how": "vercel"})
+        key = str(body.get("key", "")).strip()
+        if not _AV_KEY_RE.match(key):
+            return self._json(400, {"error": "金鑰格式看起來不對，請重新複製一次"})
+        set_env_value(AVATAR_KEY_NAME, key)
+        reload_env()
+        self._json(200, tts_status())
+
+    def _avatar_assign(self, body):
+        avatar = str(body.get("avatar") or "")
+        cust, _ = customer_for(avatar)
+        if not cust:
+            return self._json(404, {"error": "找不到這位客戶"})
+        aid = str(body.get("avatar_id") or "").strip()
+        if aid and not _UUID_RE.match(aid):
+            return self._json(400, {"error": "臉孔代號不對"})
+        name = " ".join(_CTRL.sub("", str(body.get("name") or "")).split())[:60] or aid[:8]
+        preview = str(body.get("preview_url") or "")
+        if not _PREVIEW_RE.match(preview):
+            preview = ""  # 只收 https 的圖片網址，畫面上才會顯示
+
+        def apply(cfg):
+            faces = cfg.get("liveavatar") if isinstance(cfg.get("liveavatar"), dict) else {}
+            if aid:
+                faces[avatar] = {"id": aid, "name": name, "preview_url": preview}
+            else:
+                faces.pop(avatar, None)  # 清掉：之後這位客戶沒有真人臉孔
+            cfg["liveavatar"] = faces
+
+        update_voice_cfg(apply)
+        self._json(200, tts_status())
+
+    def _avatar_session(self, body):
+        """響鈴時和 Gemini Live 的通行證一起要：建立並啟動 LiveAvatar 工作階段，回傳瀏覽器連線要用的資料。"""
+        problem = avatar_problem()
+        if problem:
+            return self._json(400, {"error": problem})
+        if not avatar_enabled():
+            return self._json(409, {"error": "真人模式已關閉，請到「聲音設定」打開"})
+        avatar = str(body.get("avatar") or "")
+        cust, _ = customer_for(avatar)
+        if not cust:
+            return self._json(404, {"error": "找不到這位客戶"})
+        sandbox = avatar_sandbox()
+        face = {"id": liveavatar.SANDBOX_AVATAR, "name": liveavatar.SANDBOX_NAME} if sandbox else avatar_faces().get(avatar)
+        if not isinstance(face, dict) or not face.get("id"):
+            who = cust.get("name") or "這位客戶"
+            return self._json(409, {"error": f"還沒幫{who}挑真人臉孔：請到「聲音設定」的真人模式挑一個"})
+        uid = getattr(CTX, "uid", "") or ""
+        try:
+            tries = STORE.eph_incr("avstart:" + (uid or self._client_ip()), 600)
+        except StoreError:
+            tries = 0
+        if tries > AVATAR_STARTS:
+            return self._json(429, {"error": "真人模式開太多次了，請 10 分鐘後再試"})
+        try:
+            sess = avatar_client().start(face["id"], sandbox, AVATAR_MAX_SEC)
+        except liveavatar.AvatarError as e:
+            self.log_message("真人模式開不起來：%s", e.detail or e)
+            return self._json(502, {"error": avatar_error_text(e)})
+        try:
+            ttl = (sess["max_session_duration"] or AVATAR_MAX_SEC) + 600
+            STORE.eph_set(AVSESS + sess["session_id"], {"uid": uid}, ttl)
+        except StoreError:
+            pass  # 記不住也沒關係：結束時直接請 LiveAvatar 收掉
+        self.log_message("真人模式開始（%s）", "測試模式" if sandbox else face.get("name") or "")
+        self._json(200, dict(sess, sandbox=sandbox, name=face.get("name") or ""))
+
+    def _avatar_stop(self, body):
+        """掛斷、換頁或關分頁時收掉真人畫面（關分頁時是 sendBeacon 送來的）；重複呼叫也沒關係。"""
+        sid = str(body.get("session_id") or "")
+        if not _UUID_RE.match(sid):
+            return self._json(400, {"error": "資料格式錯誤"})
+        try:
+            rec = STORE.eph_get(AVSESS + sid)
+        except StoreError:
+            rec = None
+        if isinstance(rec, dict) and rec.get("uid") != (getattr(CTX, "uid", "") or ""):
+            return self._json(403, {"error": "這不是你開的真人畫面"})
+        # 資料存得住（本機、Upstash）卻沒有紀錄：不是這裡開的，或已經收掉了，不用再問 LiveAvatar。
+        # 雲端沒接資料庫時每台機器的記憶體不一樣，查不到也要照樣收
+        if (rec is None and STORE.durable) or not avatar_key():
+            return self._json(200, {"ok": True, "stopped": False})
+        try:
+            STORE.eph_pop(AVSESS + sid)
+        except StoreError:
+            pass
+        try:
+            stopped = avatar_client().stop(sid)
+        except liveavatar.AvatarError as e:
+            self.log_message("真人模式收不掉：%s", e.detail or e)
+            return self._json(502, {"error": avatar_error_text(e)})
+        self._json(200, {"ok": True, "stopped": stopped})
 
     # ---- 我的背景
 

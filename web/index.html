@@ -90,6 +90,26 @@
         </div>
         <h2 class="sec-title">客戶的聲音</h2>
         <div class="voice-customers" id="voiceCustomers"></div>
+
+        <!-- 真人模式：即時通話時客戶用 HeyGen LiveAvatar 的真人影像出現 -->
+        <div id="faceSection" class="hidden">
+          <h2 class="sec-title">真人模式</h2>
+          <div class="brain-card setting-row">
+            <div class="setting-main"><b>真人模式（HeyGen LiveAvatar）</b><p class="muted" id="faceDesc"></p></div>
+            <label class="switch lg"><input type="checkbox" id="faceSwitch" aria-label="真人模式（HeyGen LiveAvatar）"><span class="knob"></span></label>
+          </div>
+          <div class="key-box hidden" id="faceKeyBox">
+            <ol class="key-steps" id="faceKeySteps"></ol>
+            <div class="key-row" id="faceKeyRow">
+              <input id="faceKeyInput" type="password" autocomplete="off" spellcheck="false" placeholder="貼上 LiveAvatar API 金鑰" aria-label="LiveAvatar API 金鑰">
+              <button class="pill primary" id="btnFaceKey" type="button">儲存</button>
+            </div>
+            <p class="muted" id="faceKeyNote"></p>
+          </div>
+          <p class="notice hidden" id="faceSandbox">測試模式：不扣點數，但只能用 Wayne，影像大約 1～2 分鐘後結束。</p>
+          <p class="muted face-note" id="faceNote"></p>
+          <div class="voice-customers" id="faceCustomers"></div>
+        </div>
       </div>
     </section>
 
@@ -439,6 +459,7 @@
 <div id="toasts" aria-live="polite"></div>
 
 <script src="avatars.js"></script>
+<script src="liveavatar.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

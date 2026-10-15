@@ -25,7 +25,7 @@ tempfile.tempdir = _RUN_TMP
 atexit.register(shutil.rmtree, _RUN_TMP, True)
 
 # 複製專案時要帶的東西；.env、.chatgpt、voices.json、profile.json、tts_cache、scenarios/custom 一律不帶
-COPY_FILES = ("server.py", "tts.py", "storage.py", "chatgpt_brain.py", "websession.py", "app.py")
+COPY_FILES = ("server.py", "tts.py", "storage.py", "chatgpt_brain.py", "websession.py", "app.py", "liveavatar.py")
 COPY_DIRS = ("web", "tools")
 
 
@@ -105,7 +105,7 @@ def clean_env(extra=None):
     """子程序用的環境變數：拿掉所有可能帶真實金鑰或設定的變數。"""
     drop = ("LLM_", "OPENAI_", "AZURE_OPENAI_", "ELEVENLABS_", "GEMINI_", "YATING_", "TTS_", "CHATGPT_", "APP_",
             "AUTH_", "ADMIN_", "PROFILE_", "BRAIN_", "LIVE_", "STORE_", "KV_", "UPSTASH_", "OLLAMA_", "VERCEL",
-            "SESSION_", "ALLOWED_HOSTS", "CLOUD_URL", "PORT")
+            "SESSION_", "ALLOWED_HOSTS", "CLOUD_URL", "PORT", "LIVEAVATAR_")
     env = {k: v for k, v in os.environ.items() if not k.startswith(drop)}
     env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONUNBUFFERED"] = "1"

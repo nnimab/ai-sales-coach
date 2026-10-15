@@ -14,6 +14,7 @@
 | 用你的 ChatGPT 方案當大腦 | 在這台電腦登入 | 從本機版同步一次，之後雲端自己續期 |
 | Gemini 備援（ChatGPT 不能用時自動接手） | 有 | 有 |
 | 即時通話（Gemini Live） | 有 | 有 |
+| 真人模式（HeyGen LiveAvatar） | 有 | 有（金鑰加在環境變數） |
 | 本機模型（Ollama） | 有 | 沒有（雲端沒有你的顯示卡） |
 | 金鑰放哪裡 | `.env`（網頁上貼） | Vercel 的環境變數（網頁上不能貼） |
 | 我的背景、自訂情境、聲音設定 | 這台電腦的檔案 | 雲端資料庫（Upstash），和本機分開 |
@@ -73,6 +74,8 @@
 | --- | --- |
 | `ADMIN_PASSCODE` | 想讓別人只能看、不能改設定時，另設一組管理者通行碼。只有你自己用就不用填 |
 | `ELEVENLABS_API_KEY`、`YATING_API_KEY` | 要用 ElevenLabs 或雅婷的聲音 |
+| `LIVEAVATAR_API_KEY` | 要用真人模式（HeyGen LiveAvatar），金鑰在 https://app.liveavatar.com/developers。加了之後到「聲音設定」打開、幫客戶挑臉 |
+| `LIVEAVATAR_SANDBOX` | 填 `1`：真人模式的測試模式，不扣點數，但只能用 Wayne、大約 1～2 分鐘就結束 |
 | `ALLOWED_HOSTS` | 用自己的網域時填網域，例如 `coach.example.com` |
 
 填好按 **Deploy**，等它跑完（大約 1～2 分鐘）。

@@ -16,3 +16,6 @@ tts_cache/
 __pycache__/
 *.pyc
 *.tmp
+
+# 客戶臉孔照片（素材，不上傳）
+face/

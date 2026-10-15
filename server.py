@@ -1130,6 +1130,8 @@ def sanitize_scenario(raw, strict=True, base=None):
         voice["pitch"] = max(0.85, min(1.15, float(old_v["pitch"])))
         if isinstance(old_v.get("brief"), str) and old_v["brief"].strip():
             voice["brief"] = old_v["brief"].strip()[:300]
+        if isinstance(old_v.get("style"), str) and old_v["style"].strip():
+            voice["style"] = old_v["style"].strip()[:150]
     except (KeyError, TypeError, ValueError):
         voice = {"gender": gender}
         voice["rate"], voice["pitch"] = default_voice(gender, age)
@@ -2021,6 +2023,10 @@ def live_voice(cust):
 def live_setup(sc, handle=""):
     """鎖在通行證裡的通話設定：客戶的隱藏資訊留在伺服器這邊，瀏覽器拿不到。"""
     instruction = customer_system_prompt(sc) + "\n\n" + LIVE_RULES.format(opening=sc.get("opening_line") or "喂？")
+    # 內建聲音講中文容易偏成熟：用語氣描述把年紀和個性拉回來（只有即時通話用得到）
+    style = ((sc["customer"].get("voice") or {}).get("style") or "").strip()
+    if style:
+        instruction += f"\n- 你的聲音和語氣：{style}。整通電話都用這種聲音說話。"
     return {
         "model": f"models/{LIVE_MODEL}",
         "generationConfig": {

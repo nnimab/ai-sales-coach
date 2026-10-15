@@ -170,8 +170,14 @@ def sample(schema, depth=0):
     if t == "object" or "properties" in schema:
         return {k: sample(v, depth + 1) for k, v in (schema.get("properties") or {}).items()}
     if t == "array":
+        items = schema.get("items") or {}
+        props = items.get("properties") or {}
+        # 物件裡有 enum 欄位（例如評分的 dimensions.id）：每個選項各給一筆，評分報告才有完整的項目
+        key = next((k for k, p in props.items() if isinstance(p, dict) and p.get("enum")), None)
+        if key:
+            return [dict(sample(items, depth + 1), **{key: v}) for v in props[key]["enum"]]
         n = int(schema.get("minItems") or 0)
-        return [sample(schema.get("items") or {}, depth + 1) for _ in range(n)]
+        return [sample(items, depth + 1) for _ in range(n)]
     if t == "string":
         return "好" * max(1, int(schema.get("minLength") or 1))
     if t in ("integer", "number"):

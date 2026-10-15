@@ -681,6 +681,22 @@ mark.bad { padding: 0 2px; border-radius: 4px; background: var(--mark); color: i
 .dim-row .bar i.low { background: var(--red); }
 .dim-row .v { text-align: right; color: var(--text-3); font-variant-numeric: tabular-nums; }
 .dim-row .v b { font-weight: 600; color: var(--text); }
+/* 產品、銷售、合規三個面向的小計；以前的紀錄沒有，整列是空的 */
+.sec-totals { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 28px; margin-bottom: 28px; }
+.sec-totals:empty { display: none; }
+.sec-total span { display: block; font-size: 12.5px; color: var(--text-3); }
+.sec-total b { display: block; margin-top: 4px; font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.sec-total b small { font-size: 12.5px; font-weight: 400; color: var(--text-3); }
+.sec-total .bar { height: 4px; margin-top: 10px; border-radius: 99px; background: var(--line-2); overflow: hidden; }
+.sec-total .bar i { display: block; width: 0; height: 100%; border-radius: inherit; background: var(--text); transition: width 1s cubic-bezier(0.2, 0.8, 0.2, 1); }
+.dim-bars.grouped { gap: 10px; }
+.dim-sec { display: flex; justify-content: space-between; margin-top: 8px; font-size: 13px; color: var(--text-3); font-variant-numeric: tabular-nums; }
+.dim-sec:first-child { margin-top: 0; }
+.dim-sec b { font-weight: 600; color: var(--text); }
+.fb-sec { display: flex; justify-content: space-between; margin: 22px 0 0; padding-bottom: 8px; border-bottom: 1px solid var(--line-2); font-size: 13px; font-weight: 600; color: var(--text-2); font-variant-numeric: tabular-nums; }
+.fb-sec:first-child { margin-top: 0; }
+.fb-sec span { font-weight: 400; color: var(--text-3); }
+.fb-sec + .fb { padding-top: 14px; }
 .compliance-ok { display: flex; align-items: center; gap: 10px; font-size: 14.5px; }
 .compliance-ok .ic { width: 20px; height: 20px; color: var(--green); }
 .violation { display: flex; gap: 10px; padding: 12px 0; }
@@ -750,6 +766,7 @@ mark.bad { padding: 0 2px; border-radius: 4px; background: var(--mark); color: i
   .brain-row .select { min-width: 0; width: 100%; }
   .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .stat:nth-child(3) { padding-left: 4px; border-left: none; }
+  .sec-totals { gap: 16px; }
   .call { height: auto; min-height: 100vh; }
   .call-body { grid-template-columns: 1fr; }
   .side { min-height: 460px; }
@@ -791,4 +808,5 @@ mark.bad { padding: 0 2px; border-radius: 4px; background: var(--mark); color: i
   #view-report { display: block !important; }
   .page { padding: 0; }
   .fb, .violation { break-inside: avoid; }
+  .fb-sec { break-after: avoid; }
 }

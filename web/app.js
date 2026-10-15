@@ -921,10 +921,11 @@ function renderHistory() {
   }
   $('#historyBox').innerHTML = list.map((h, i) => {
     const s = scenarioFor(h);
-    const alerts = h.report.violations.length ? ` · 合規警示 ${h.report.violations.length} 則` : '';
+    const alerts = h.report.violations?.length ? ` · 合規警示 ${h.report.violations.length} 則` : '';
+    const secs = sectionLine(h.report);
     return `<button class="list-row" type="button" data-i="${i}">
       <div class="av">${avatarSVG(s.customer.avatar)}</div>
-      <div class="list-main"><b>${esc(s.customer.name)} · ${esc(s.title)}</b><span>${esc(fmtDate(h.at))} · ${h.mode === 'exam' ? '考核' : '練習'} · ${esc(fmtDuration(h.secs))}${alerts}</span></div>
+      <div class="list-main"><b>${esc(s.customer.name)} · ${esc(s.title)}</b><span>${esc(fmtDate(h.at))} · ${h.mode === 'exam' ? '考核' : '練習'} · ${esc(fmtDuration(h.secs))}${secs ? ` · ${esc(secs)}` : ''}${alerts}</span></div>
       <div class="list-score"><span class="tag ${GRADE_TAG[h.report.grade] ?? ''}">${esc(h.report.grade)}</span><b>${h.report.total}</b></div>
     </button>`;
   }).join('');
@@ -1580,12 +1581,14 @@ const ScenarioAdmin = (() => {
   const AV_DESC = { chen: '戴眼鏡的中年男性', lin: '年長女性', wang: '年輕女性' };
   const DIFF = [[1, '簡單'], [2, '中等'], [3, '困難']];
   const DIRECTION = [['incoming', '客戶來電'], ['outgoing', '由你撥出']];
+  const RUBRIC_OPTS = [['general', '一般'], ['fund', '基金'], ['bond', '海外債']];
   const HIDDEN = [
     ['persona', '客戶人設', 1500, 5, '用「你是……」開頭：身分、家庭、投資經歷、個性和說話方式'],
     ['hidden_info', '隱藏資訊', 1000, 4, '沒被問到就不會說的關鍵事實，例如資金用途、投資期限、預備金'],
     ['reveal_rules', '問到才說（業務問…→ 回答…）', 1500, 4, '一行一條，例如：業務問這筆錢什麼時候要用 → 回答：兩年後孩子出國念書'],
     ['behavior', '反應方式', 1500, 4, '業務做錯時怎麼反應，做對時怎麼慢慢放心'],
     ['coach_notes', '教練重點', 1000, 4, '好的應對步驟和常見錯誤，給 AI 教練評分用'],
+    ['product_facts', '商品資料（可不填）', 3000, 4, '教練和評分當正確答案用，例如票面利率、到期日、費用、交易規則'],
   ];
   const TOKENS = ['業務稱呼', '職稱簡稱', '公司'];
   const BRACE = /\{([^{}\n]{1,20})\}/g;
@@ -1771,6 +1774,7 @@ const ScenarioAdmin = (() => {
       <div class="form-grid">
         ${text('title', '標題', sc.title, 30, { wide: true, ph: '例如：市場大跌，客戶想停扣贖回' })}
         ${text('product', '商品', sc.product, 30, { ph: '例如：股票型基金定期定額' })}
+        ${seg('rubric_type', '產品面評分標準', sc.rubric_type || 'general', RUBRIC_OPTS, false)}
         ${num('duration_min', '建議時間（分鐘）', sc.duration_min, 3, 30)}
         ${seg('difficulty_level', '難度', sc.difficulty_level || 2, DIFF, true)}
         ${seg('call_direction', '通話方向', sc.call_direction || 'incoming', DIRECTION, false)}
@@ -4149,6 +4153,21 @@ function radarSVG(dims) {
   return `<svg class="radar" viewBox="0 0 420 316">${grid}${axes}<polygon class="rp" points="${values}"/>${dots}${labels}</svg>`;
 }
 
+// 報告的項目依面向分組：[{ sec, dims }]。以前的紀錄（六項、沒有 sections）就是一組、sec 是 null
+function reportGroups(r) {
+  const dims = Array.isArray(r.dimensions) ? r.dimensions : [];
+  const secs = Array.isArray(r.sections) ? r.sections : [];
+  if (!secs.length) return [{ sec: null, dims }];
+  return secs.map((sec) => ({ sec, dims: dims.filter((d) => d.section === sec.id) }));
+}
+
+// 練習紀錄列表用的短字：「產品 28 · 銷售 31 · 合規 15」；舊紀錄沒有就空字串
+function sectionLine(r) {
+  return Array.isArray(r?.sections) ? r.sections.map((s) => `${s.short} ${s.score}`).join(' · ') : '';
+}
+
+const RUBRIC_NAME = { fund: '基金', bond: '海外債' };
+
 function renderReport(r, ctx) {
   const s = ctx.scenario;
   state.report = { r, ctx };
@@ -4157,7 +4176,8 @@ function renderReport(r, ctx) {
 
   $('#btnCrumb').textContent = ctx.from === 'history' ? '練習紀錄' : '對練情境';
   $('#reportTitle').textContent = `${s.customer.name} · ${s.title}`;
-  $('#reportMeta').textContent = `${fmtDate(ctx.at)} · 評分模型 ${r.model}`;
+  const rubric = RUBRIC_NAME[r.rubric_type] ? ` · 產品面用${RUBRIC_NAME[r.rubric_type]}標準` : '';
+  $('#reportMeta').textContent = `${fmtDate(ctx.at)} · 評分模型 ${r.model}${rubric}`;
 
   const arc = $('#scoreArc');
   const C = 2 * Math.PI * 52;
@@ -4185,21 +4205,31 @@ function renderReport(r, ctx) {
   if (r.partial) notes.push('部分項目 AI 沒有給分，以「未評估」顯示。');
   $('#reportNotice').innerHTML = notes.length ? `<div class="notice">${esc(notes.join(' '))}</div>` : '';
 
+  // 新的報告分產品、銷售、合規三個面向；以前存的紀錄沒有 sections，照舊一整排顯示
+  const groups = reportGroups(r);
+  $('#reportSections').innerHTML = groups[0].sec ? groups.map(({ sec }) => {
+    const pct = sec.max ? Math.round((sec.score / sec.max) * 100) : 0;
+    return `<div class="sec-total"><span>${esc(sec.label)}</span><b>${sec.score} <small>/ ${sec.max}</small></b><div class="bar"><i data-w="${pct}"></i></div></div>`;
+  }).join('') : '';
+
   $('#radar').innerHTML = radarSVG(r.dimensions);
-  $('#dimBars').innerHTML = r.dimensions.map((d) => {
+  const dimRow = (d) => {
     const pct = d.score == null ? 0 : (d.score / d.max) * 100;
     const level = pct < 40 ? 'low' : pct < 70 ? 'mid' : '';
     return `<div class="dim-row"><span>${esc(d.label)}</span><div class="bar"><i class="${level}" data-w="${pct.toFixed(0)}"></i></div><span class="v"><b>${d.score ?? '—'}</b> / ${d.max}</span></div>`;
-  }).join('');
+  };
+  $('#dimBars').classList.toggle('grouped', !!groups[0].sec);
+  $('#dimBars').innerHTML = groups.map(({ sec, dims }) =>
+    (sec ? `<div class="dim-sec"><b>${esc(sec.label)}</b><span>${sec.score} / ${sec.max}</span></div>` : '') + dims.map(dimRow).join('')).join('');
   setTimeout(() => {
-    $$('#dimBars .bar i').forEach((i) => { i.style.width = `${i.dataset.w}%`; });
+    $$('#dimBars .bar i, #reportSections .bar i').forEach((i) => { i.style.width = `${i.dataset.w}%`; });
   }, 30);
 
   $('#complianceBox').innerHTML = r.violations.length
     ? r.violations.map((v) => `<div class="violation">${icon('alert')}<div><b>${esc(v.issue)}</b><p>「${esc(v.quote)}」</p></div></div>`).join('')
     : `<div class="compliance-ok">${icon('shield')}這次對話沒有發現保證獲利、明牌、私下退佣等違規用語。</div>`;
 
-  $('#dimCards').innerHTML = r.dimensions.map((d) => {
+  const card = (d) => {
     const extras = [
       d.evidence ? `<div class="quote"><small>你說的</small>「${esc(d.evidence)}」</div>` : '',
       d.better ? `<div class="better"><small>建議這樣說</small>${esc(d.better)}</div>` : '',
@@ -4209,7 +4239,9 @@ function renderReport(r, ctx) {
       <p>${esc(d.reason)}</p>
       ${extras.length ? `<div class="fb-grid">${extras.join('')}</div>` : ''}
     </div>`;
-  }).join('');
+  };
+  $('#dimCards').innerHTML = groups.map(({ sec, dims }) =>
+    (sec ? `<h3 class="fb-sec">${esc(sec.label)}<span>${sec.score} / ${sec.max}</span></h3>` : '') + dims.map(card).join('')).join('');
 
   const bullets = (arr, ic) => (arr.length ? arr.map((x) => `<li>${icon(ic)}<span>${esc(x)}</span></li>`).join('') : '<li class="none">（無）</li>');
   $('#strengths').innerHTML = bullets(r.strengths, 'check');

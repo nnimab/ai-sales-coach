@@ -1,4 +1,5 @@
 """部署後的快速檢查（V1～V8）：python tools/smoke.py https://你的專案.vercel.app 通行碼 [--admin 管理者通行碼] [--write] [--no-tts]
+不用登入的網站（AUTH_MODE=open）：python tools/smoke.py https://你的專案.vercel.app --open [--admin 管理者通行碼] [--write] [--no-tts]
 只用標準函式庫。不會印出通行碼或 cookie。--write 會新增再刪掉一個測試情境（要管理者權限）。"""
 
 import http.client
@@ -88,25 +89,35 @@ class Site:
 
 def main():
     args = sys.argv[1:]
-    if len(args) < 2 or args[0].startswith("-"):
+    open_mode = "--open" in args
+    if not args or args[0].startswith("-") or (not open_mode and (len(args) < 2 or args[1].startswith("-"))):
         sys.exit(__doc__)
-    base, passcode = args[0], args[1]
+    base, passcode = args[0], "" if open_mode else args[1]
     admin = args[args.index("--admin") + 1] if "--admin" in args else ""
     write, tts = "--write" in args, "--no-tts" not in args
     site = Site(base)
 
-    # V1：沒登入不能用 API
+    # V1：要登入的網站，沒登入不能用 API；不用登入的網站（--open）直接能用，還會拿到一個匿名 cookie
     status, js, _ = site.call("GET", "/api/status")
-    report("V1", status == 401 and bool((js or {}).get("login")), f"沒登入呼叫 /api/status → HTTP {status}")
+    if open_mode:
+        ok = status == 200 and site.cookie.startswith("aic_session=")
+        report("V1", ok, f"不用登入呼叫 /api/status → HTTP {status}{'' if site.cookie else '（沒有拿到匿名 cookie）'}")
+    else:
+        report("V1", status == 401 and bool((js or {}).get("login")), f"沒登入呼叫 /api/status → HTTP {status}")
     if status == 503:
         print("    雲端設定還沒完成：" + "、".join((js or {}).get("setup_problems") or [str((js or {}).get("error") or "")]))
-
-    # V3：登入
-    status, js, _ = site.call("POST", "/api/login", {"passcode": admin or passcode, "name": "smoke"})
-    ok = status == 200 and site.cookie.startswith("aic_session=")
-    report("V3", ok, f"用通行碼登入 → HTTP {status}{'' if ok else '（' + str((js or {}).get('error') or '') + '）'}")
-    if not ok:
+    if open_mode and not ok:
         return finish()
+
+    # V3：登入（--open 不用登入；有給 --admin 才用管理者通行碼登入）
+    if open_mode and not admin:
+        report("V3", None, "不用登入（AUTH_MODE=open），略過")
+    else:
+        status, js, _ = site.call("POST", "/api/login", {"passcode": admin or passcode, "name": "smoke"})
+        ok = status == 200 and site.cookie.startswith("aic_session=")
+        report("V3", ok, f"用通行碼登入 → HTTP {status}{'' if ok else '（' + str((js or {}).get('error') or '') + '）'}")
+        if not ok:
+            return finish()
     status, st, _ = site.call("GET", "/api/status")
     st = st or {}
     storage = st.get("storage") or {}
@@ -149,11 +160,19 @@ def main():
 
     # V6：不同瀏覽器的「我的背景」互相看不到
     other = Site(base)
-    code, _, _ = other.call("POST", "/api/login", {"passcode": passcode, "name": "smoke2"})
+    if open_mode:
+        other.call("GET", "/api/status")  # 拿另一個匿名 cookie
+    else:
+        other.call("POST", "/api/login", {"passcode": passcode, "name": "smoke2"})
     profile = {"surname": "測", "given_name": "", "address": "", "role": "wealth", "custom_title": "",
                "company": "smoke-" + str(int(time.time())), "branch": "", "years": None, "products": [], "knowledge": ""}
-    code, js, _ = site.call("POST", "/api/profile", {"profile": profile})
-    if code == 403:
+    _, before, _ = site.call("GET", "/api/profile")
+    shared = bool((before or {}).get("shared"))
+    code = None if shared else site.call("POST", "/api/profile", {"profile": profile})[0]
+    if shared:
+        # 大家共用同一份：存測試資料再清掉，會把你真的背景洗掉
+        report("V6", None, "「我的背景」是共用的（PROFILE_SCOPE=shared），不動你的資料，略過")
+    elif code == 403:
         report("V6", None, "背景目前鎖住（PROFILE_LOCKED），略過")
     elif code != 200:
         report("V6", False, f"存不了背景（HTTP {code}）")

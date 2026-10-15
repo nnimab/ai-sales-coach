@@ -803,10 +803,16 @@ class RedisStore(Store):
 
     def eph_incr(self, key, ttl):
         k = self._k("eph:" + key)
-        n = int(self.cmd("INCR", k))
-        if n == 1:  # 第一次才設期限：固定的時間窗，不會越試越久
-            self.cmd("EXPIRE", k, max(1, int(-(-float(ttl) // 1))))
-        return n
+        sec = max(1, int(-(-float(ttl) // 1)))
+        # 建立計數和設期限在同一個交易裡：不會留下沒有期限、永遠鎖住的計數。
+        # SET NX 只在第一次建立：固定的時間窗，不會越試越久
+        _, n, left = self.multi([["SET", k, "0", "EX", sec, "NX"], ["INCR", k], ["TTL", k]])
+        if left == -1:  # 舊版留下沒有期限的計數：補上期限（補不上下次再補）
+            try:
+                self.cmd("EXPIRE", k, sec)
+            except StoreError:
+                pass
+        return int(n)
 
     # ---- 跨執行個體的鎖
 

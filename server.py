@@ -101,7 +101,8 @@ def load_env():
             env[key.strip()] = value
     for key, value in os.environ.items():
         if key.startswith(ENV_PREFIXES) or key in ("PORT", "ALLOWED_HOSTS", "CLOUD_URL"):
-            env[key] = value
+            # 和 .env 一樣去掉前後空白：Vercel 上貼的值多一個換行，同步密碼、通行碼就會永遠對不上
+            env[key] = value.strip()
     return env
 
 
@@ -1012,6 +1013,7 @@ def profile_payload():
     return {
         "profile": {k: raw[k] for k in PROFILE_DEFAULTS},
         "saved": rep["saved"],
+        "shared": profile_uid() == "shared",  # 雲端 PROFILE_SCOPE=shared：每個瀏覽器共用同一份
         "effective": {k: rep[k] for k in ("full_name", "address", "title", "short", "company_label")},
         "roles": [{"id": k, "title": v["title"] or "自訂", "short": v["short"]} for k, v in ROLES.items()],
         "limits": LIMITS,
@@ -2234,12 +2236,14 @@ def setup_problems():
     if not ON_CLOUD:
         return []
     out = []
-    secret = ENV.get("APP_SECRET") or ""
+    secret = app_secret()
     if not secret:
         out.append("還沒設定 APP_SECRET（40 個以上的亂碼）")
     elif len(secret) < 32:
         out.append("APP_SECRET 太短，至少要 32 個字")
-    if auth_mode() == "passcode" and not ENV.get("APP_PASSCODE"):
+    if auth_mode() not in AUTH_MODES:
+        out.append("AUTH_MODE 只能是 passcode、open 或 vercel")
+    elif auth_mode() == "passcode" and not app_passcode():
         out.append("還沒設定 APP_PASSCODE（登入用的通行碼）")
     if not ENV.get("GEMINI_API_KEY"):
         out.append("還沒設定 GEMINI_API_KEY")
@@ -2291,7 +2295,7 @@ def status():
         "storage": storage_info(),
         "can_admin": is_admin(),
         "auth": {"required": auth_required(), "name": getattr(CTX, "name", "") or "",
-                 "role": getattr(CTX, "role", "") or "local"},
+                 "role": getattr(CTX, "role", "") or "local", "admin_login": admin_login()},
         "setup_problems": setup_problems(),
     }
     note = ""
@@ -2391,54 +2395,91 @@ OPEN_PATHS = {"/login", "/login.html", "/login.js", "/styles.css", "/api/session
 # 本機程式把 ChatGPT 憑證送上雲端用的：不走通行碼，用 X-Sync-Key 驗證
 SYNC_PATHS = {"/api/chatgpt/sync/host", "/api/chatgpt/sync/import", "/api/chatgpt/sync/clear"}
 _RUNTIME_SECRET = secrets.token_urlsafe(32)  # 本機設了通行碼卻沒設 APP_SECRET：重開程式就要重新登入
+# passcode：輸入通行碼；open：不用登入，有網址就能用（展示用）；vercel：交給 Vercel 的 Deployment Protection
+AUTH_MODES = ("passcode", "open", "vercel")
+_LOCAL_TRIES = storage.MemoryStore()  # 資料庫連不上時，試了幾次先記在這台機器的記憶體
 
 
 def auth_mode():
     return (ENV.get("AUTH_MODE") or "passcode").strip().lower()
 
 
+def app_passcode():
+    """進網站的通行碼；AUTH_MODE=open 就算設了也不看。"""
+    return "" if auth_mode() == "open" else (ENV.get("APP_PASSCODE") or "").strip()
+
+
+def admin_passcode():
+    return (ENV.get("ADMIN_PASSCODE") or "").strip()
+
+
 def auth_required():
-    """本機預設不用登入；設了 APP_PASSCODE、或放在雲端（除非交給 Vercel 的保護），就要登入。"""
-    if ENV.get("APP_PASSCODE"):
+    """本機預設不用登入；設了 APP_PASSCODE、或放在雲端（除非 AUTH_MODE=open 或交給 Vercel 的保護），就要登入。"""
+    if auth_mode() == "open":
+        return False
+    if app_passcode():
         return True
     return ON_CLOUD and auth_mode() != "vercel"
 
 
 def sessions_on():
-    """要不要用登入 cookie：雲端一定要（AUTH_MODE=vercel 也要，每個瀏覽器才有自己的代號）；本機只有設了通行碼才要。"""
-    return ON_CLOUD or bool(ENV.get("APP_PASSCODE"))
+    """要不要用登入 cookie：雲端一定要（open、vercel 也要，每個瀏覽器才有自己的代號）；本機只有設了通行碼才要。"""
+    return ON_CLOUD or bool(app_passcode())
+
+
+def admin_login():
+    """不用登入的網站設了 ADMIN_PASSCODE：/login 只用來拿管理者權限（改設定）。"""
+    return sessions_on() and not auth_required() and bool(admin_passcode())
 
 
 def app_secret():
-    secret = ENV.get("APP_SECRET") or ""
+    secret = (ENV.get("APP_SECRET") or "").strip()
     if secret or ON_CLOUD:
         return secret
     return _RUNTIME_SECRET
 
 
 def passcode_version():
-    # 改了通行碼（或管理者通行碼），舊的登入就失效
-    return websession.passcode_version(f"{ENV.get('APP_PASSCODE') or ''}\n{ENV.get('ADMIN_PASSCODE') or ''}")
+    # 改了通行碼（或管理者通行碼），舊的登入就失效；用 APP_SECRET 當鑰匙，cookie 裡的這段猜不回通行碼
+    return websession.passcode_version(f"{app_passcode()}\n{admin_passcode()}", app_secret())
 
 
 def auth_setup_problem():
     """雲端少了必要的設定就整個關起來（不然任何人都能用你的 Gemini 金鑰）。"""
     if not ON_CLOUD:
         return ""
-    if not ENV.get("APP_SECRET"):
+    if not app_secret():
         return "雲端還沒設定好：請到 Vercel → Settings → Environment Variables 新增 APP_SECRET 後 Redeploy"
-    if auth_mode() == "passcode" and not ENV.get("APP_PASSCODE"):
+    if auth_mode() not in AUTH_MODES:
+        return "雲端的 AUTH_MODE 只能是 passcode、open 或 vercel：請到 Vercel 改好後 Redeploy"
+    if auth_mode() == "passcode" and not app_passcode():
         return "雲端還沒設定好：請到 Vercel → Settings → Environment Variables 新增 APP_PASSCODE 後 Redeploy"
     return ""
 
 
 def is_admin():
-    """管理者：有設 ADMIN_PASSCODE 時要用它登入；沒設就是任何登入的人。本機不用登入時人人都是。"""
+    """管理者：有設 ADMIN_PASSCODE 時要用它登入；沒設就是任何登入的人（AUTH_MODE=open 就是每個人）。本機不用登入時人人都是。"""
     if not sessions_on():
         return True
-    if ENV.get("ADMIN_PASSCODE"):
+    if admin_passcode():
         return getattr(CTX, "role", "") == "admin"
     return bool(getattr(CTX, "uid", ""))
+
+
+def count_try(key, ttl):
+    """這個時間窗裡試了第幾次；資料庫連不上就改在這台機器的記憶體數，不會因此變成不限次數。"""
+    try:
+        return STORE.eph_incr(key, ttl)
+    except StoreError as e:
+        log_once("tries", f"[安全] 資料庫連不上，次數先記在這台機器：{e}")
+        return _LOCAL_TRIES.eph_incr(key, ttl)
+
+
+def tries_so_far(key):
+    try:
+        return int(STORE.eph_get(key) or 0)
+    except (StoreError, TypeError, ValueError):
+        return int(_LOCAL_TRIES.eph_get(key) or 0)
 
 
 def session_days():
@@ -2738,7 +2779,10 @@ class Handler(BaseHTTPRequestHandler):
             return False
         sess = self._read_session()
         if sess is None and not auth_required():
-            sess = self._new_session(websession.new_uid(), "", "user")  # 交給 Vercel 保護：每個瀏覽器給一個匿名代號
+            # 不用登入（AUTH_MODE=open 或交給 Vercel 保護）：每個瀏覽器給一個匿名代號。
+            # 舊的 cookie 簽名還對（只是過期或通行碼換了）就沿用原本的代號，「我的背景」才不會不見；權限一律重新給
+            old = self._read_session(check_exp=False)
+            sess = self._new_session(old["uid"] if old else websession.new_uid(), (old or {}).get("name") or "", "user")
         if sess:
             CTX.uid, CTX.name, CTX.role = sess["uid"], sess.get("name") or "", sess.get("role") or "user"
             return True
@@ -2781,12 +2825,16 @@ class Handler(BaseHTTPRequestHandler):
         return False
 
     def _session_info(self):
-        logged_in = not auth_required() or bool(getattr(CTX, "uid", ""))
+        setup = bool(auth_setup_problem())
+        # 雲端還沒設定好就不算登入（不用登入的網站也一樣）：登入頁才會留下來列出缺什麼，不會和首頁來回跳
+        logged_in = not setup and (not auth_required() or bool(getattr(CTX, "uid", "")))
         # 沒登入的人只看得到登入相關的設定問題
-        problems = setup_problems() if logged_in or auth_setup_problem() else []
+        problems = setup_problems() if logged_in or setup else []
         return {
             "auth_required": auth_required(),
             "logged_in": logged_in,
+            "setup": setup,
+            "admin_login": admin_login(),
             "name": getattr(CTX, "name", "") or "",
             "role": (getattr(CTX, "role", "") or "") if sessions_on() else "local",
             "hosted": ON_CLOUD,
@@ -2801,17 +2849,15 @@ class Handler(BaseHTTPRequestHandler):
         problem = auth_setup_problem()
         if problem:
             return self._json(503, {"error": problem, "setup": True})
-        try:
-            tries = STORE.eph_incr("login:" + self._client_ip(), 600)
-        except StoreError:
-            tries = 0
-        if tries > 10:
+        if count_try("login:" + self._client_ip(), 600) > 10:
             return self._json(429, {"error": "試太多次了，請 10 分鐘後再試"})
-        given = str(body.get("passcode") or "")
+        # 兩邊都去掉前後空白再比（設定值多一個換行或空白就永遠對不上）
+        given = str(body.get("passcode") or "").strip()
+        admin, user = admin_passcode(), app_passcode()  # AUTH_MODE=open 只認管理者通行碼
         role = ""
-        if ENV.get("ADMIN_PASSCODE") and websession.passcode_ok(given, ENV["ADMIN_PASSCODE"]):
+        if admin and websession.passcode_ok(given, admin):
             role = "admin"
-        elif ENV.get("APP_PASSCODE") and websession.passcode_ok(given, ENV["APP_PASSCODE"]):
+        elif user and websession.passcode_ok(given, user):
             role = "user"
         if not role:
             self.log_message("通行碼不對（%s）", self._client_ip())
@@ -3011,20 +3057,14 @@ class Handler(BaseHTTPRequestHandler):
             return False
         # 只算猜錯的次數：10 分鐘內錯 10 次就先擋掉（正常同步不會被自己擋住）
         fail_key = "syncfail:" + self._client_ip()
-        try:
-            fails = int(STORE.eph_get(fail_key) or 0)
-        except (StoreError, TypeError, ValueError):
-            fails = 0
-        if fails >= 10:
+        if tries_so_far(fail_key) >= 10:
             self._json(429, {"error": "試太多次了，請 10 分鐘後再試"})
             return False
-        given = (self.headers.get("X-Sync-Key") or "").encode("utf-8", "replace")
-        want = (ENV.get("CHATGPT_SYNC_KEY") or "").encode("utf-8")
-        if not hmac.compare_digest(hashlib.sha256(given).digest(), hashlib.sha256(want).digest()):
-            try:
-                STORE.eph_incr(fail_key, 600)
-            except StoreError:
-                pass
+        given = (self.headers.get("X-Sync-Key") or "").strip().encode("utf-8", "replace")
+        # 跟 sync_enabled 看的是同一個值（去掉前後空白的）：開了同步就一定比得上
+        want = CHATGPT_CFG.sync_key.encode("utf-8")
+        if not want or not hmac.compare_digest(hashlib.sha256(given).digest(), hashlib.sha256(want).digest()):
+            count_try(fail_key, 600)
             self.log_message("同步密碼不對（%s）", self._client_ip())
             self._json(401, {"error": "同步密碼不對", "sync": True})
             return False
@@ -3369,11 +3409,7 @@ class Handler(BaseHTTPRequestHandler):
             who = cust.get("name") or "這位客戶"
             return self._json(409, {"error": f"還沒幫{who}挑真人臉孔：請到「聲音設定」的真人模式挑一個"})
         uid = getattr(CTX, "uid", "") or ""
-        try:
-            tries = STORE.eph_incr("avstart:" + (uid or self._client_ip()), 600)
-        except StoreError:
-            tries = 0
-        if tries > AVATAR_STARTS:
+        if count_try("avstart:" + (uid or self._client_ip()), 600) > AVATAR_STARTS:
             return self._json(429, {"error": "真人模式開太多次了，請 10 分鐘後再試"})
         try:
             sess = avatar_client().start(face["id"], sandbox, AVATAR_MAX_SEC)

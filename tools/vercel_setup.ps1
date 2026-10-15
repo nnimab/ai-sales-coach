@@ -1,5 +1,9 @@
 ﻿# 一鍵部署到 Vercel：設定環境變數 → 部署正式版 → 把雲端網址和同步密碼寫回本機 .env → 自動檢查
 # 由 deploy.bat 執行；可以重複跑，已經設過的亂碼不會被換掉（換掉會讓雲端的 ChatGPT 憑證讀不到）
+# 網站不用登入（AUTH_MODE=open）：打開網址就能練習，有網址的人都能用（展示用）
+# -Auto：完全不問問題（給排程或別的程式用）；沒接 Upstash 只警告，本機和雲端都沒有 Gemini 金鑰就停下來
+# 結束代碼：0 = 完成；1 = 沒有部署成功；2 = 部署好了，但自動檢查有沒過的項目
+param([switch]$Auto)
 
 $ErrorActionPreference = 'Continue'
 [Console]::OutputEncoding = [Text.Encoding]::UTF8
@@ -10,6 +14,7 @@ $Project = 'ai-sales-coach'
 $Team = 'h23881956s-projects'
 
 function Say($text) { Write-Host $text }
+function Warn($text) { Write-Host $text -ForegroundColor Yellow }
 function Fail($text) { Write-Host ''; Write-Host $text -ForegroundColor Red; exit 1 }
 
 # 跑 vercel 指令，stdout 和 stderr 一起收（交給 cmd 合併，PowerShell 5.1 才不會把 stderr 當錯誤）
@@ -49,11 +54,23 @@ function SetCloudEnv([string]$name, [string]$value, [switch]$Sensitive) {
     Say "  已設定 $name"
 }
 
-function NewSecret { python -c "import secrets; print(secrets.token_urlsafe(32))" }
+function NewSecret {
+    $s = python -c "import secrets; print(secrets.token_urlsafe(32))"
+    if ($LASTEXITCODE -ne 0 -or -not $s) { Fail '產生亂碼失敗：請確認這台電腦有安裝 Python' }
+    return ([string]$s).Trim()
+}
+
+# 讀不到雲端的變數清單就停：不然會以為亂碼還沒設，把已經設好的換掉
+function CloudNames {
+    $r = Vercel 'env ls production'
+    if ($r.code -ne 0) { Fail ("讀不到 Vercel 的環境變數，先停下來（免得把設好的亂碼換掉）：`n" + $r.text) }
+    return $r.text
+}
 
 Say '== 1. 檢查 Vercel 登入'
 $who = Vercel 'whoami'
 if ($who.code -ne 0) {
+    if ($Auto) { Fail '還沒登入 Vercel：請先雙擊 deploy.bat 登入一次（或執行 vercel login）' }
     Say '還沒登入 Vercel，接下來會開瀏覽器讓你登入'
     cmd /c 'vercel login'
     $who = Vercel 'whoami'
@@ -68,9 +85,10 @@ if (-not (Test-Path .vercel\project.json)) {
 }
 
 Say '== 2. 檢查雲端資料庫（Upstash Redis）'
-function CloudNames { (Vercel 'env ls production').text }
 $names = CloudNames
-while ($names -notmatch '(?m)^\s*(KV_REST_API_URL|UPSTASH_REDIS_REST_URL)\s') {
+$storePattern = '(?m)^\s*(KV_REST_API_URL|UPSTASH_REDIS_REST_URL)\s'
+$hasStore = $names -match $storePattern
+while (-not $hasStore -and -not $Auto) {
     Say ''
     Say '  還沒接上資料庫。沒有它，ChatGPT 同步和你的設定在重新部署後都會不見。'
     Say '  請在瀏覽器做（接下來會自動打開專案頁）：'
@@ -80,54 +98,54 @@ while ($names -notmatch '(?m)^\s*(KV_REST_API_URL|UPSTASH_REDIS_REST_URL)\s') {
     $ans = Read-Host '  弄好按 Enter；先不接資料庫就輸入 s 再按 Enter'
     if ($ans -eq 's') { break }
     $names = CloudNames
+    $hasStore = $names -match $storePattern
+}
+if (-not $hasStore) {
+    Warn '  警告：還沒接上 Upstash 資料庫，先照樣部署。設定、自訂情境和 ChatGPT 同步在重新部署後會不見。'
+    Warn "  之後要接：https://vercel.com/$Team/$Project/stores → Create Database → Upstash for Redis，再執行一次 deploy.bat"
 }
 
 Say '== 3. 設定環境變數'
 function OnCloud([string]$name) { return $names -match "(?m)^\s*$name\s" }
 
-if (-not (OnCloud 'APP_PASSCODE')) {
-    $want = $true
-} else {
-    $want = (Read-Host '  已經有通行碼了，要換一組嗎？(y/N)') -eq 'y'
+# 不用登入：打開網址就能用。以前設的通行碼拿掉（open 模式本來就不看它，留著只會讓人以為還有在擋）
+SetCloudEnv 'AUTH_MODE' 'open'
+if (OnCloud 'APP_PASSCODE') {
+    $r = Vercel 'env rm APP_PASSCODE production --yes'
+    if ($r.code -eq 0) { Say '  已拿掉 APP_PASSCODE（網站不用登入了）' }
+    else { Warn ("  拿不掉 APP_PASSCODE（不影響使用，open 模式不看它）：`n" + $r.text) }
 }
-if ($want) {
-    while ($true) {
-        $s1 = Read-Host '  請設定登入網站用的通行碼（8 個字以上，輸入時不會顯示）' -AsSecureString
-        $s2 = Read-Host '  再輸入一次' -AsSecureString
-        $p1 = [Runtime.InteropServices.Marshal]::PtrToStringBSTR([Runtime.InteropServices.Marshal]::SecureStringToBSTR($s1))
-        $p2 = [Runtime.InteropServices.Marshal]::PtrToStringBSTR([Runtime.InteropServices.Marshal]::SecureStringToBSTR($s2))
-        if ($p1 -ne $p2) { Say '  兩次不一樣，再來一次'; continue }
-        if ($p1.Trim().Length -lt 8) { Say '  太短了，至少 8 個字'; continue }
-        break
-    }
-    SetCloudEnv 'APP_PASSCODE' $p1.Trim() -Sensitive
-    $passcode = $p1.Trim()
-} else {
-    $passcode = ''
-}
+if (OnCloud 'ADMIN_PASSCODE') { Say '  雲端有 ADMIN_PASSCODE：練習不用登入；要改設定，先到「網址/login」輸入它' }
 
+# 簽 cookie、加密 ChatGPT 憑證的亂碼：已經有就絕對不換
 if (-not (OnCloud 'APP_SECRET')) { SetCloudEnv 'APP_SECRET' (NewSecret) -Sensitive }
 
-# 同步密碼本機和雲端要一樣；本機沒有的話（雲端那份讀不回來）就兩邊一起換
+# 同步密碼本機和雲端要一樣。雲端已經有就不換（讀不回來，換了本機同步會失敗）
 $syncKey = LocalEnv 'CHATGPT_SYNC_KEY'
-if (-not $syncKey -or -not (OnCloud 'CHATGPT_SYNC_KEY')) {
-    if (-not $syncKey) { $syncKey = NewSecret }
+if (-not (OnCloud 'CHATGPT_SYNC_KEY')) {
+    $newKey = -not $syncKey
+    if ($newKey) { $syncKey = NewSecret }
     SetCloudEnv 'CHATGPT_SYNC_KEY' $syncKey -Sensitive
-    SaveLocalEnv 'CHATGPT_SYNC_KEY' $syncKey
+    if ($newKey) { SaveLocalEnv 'CHATGPT_SYNC_KEY' $syncKey }
+} elseif (-not $syncKey) {
+    Warn '  雲端已經有 CHATGPT_SYNC_KEY，本機 .env 卻沒有：這次不換。要從本機同步 ChatGPT，請在本機「雲端版」填同一組同步密碼'
 }
 
 $gemini = LocalEnv 'GEMINI_API_KEY'
 if (-not $gemini -and -not (OnCloud 'GEMINI_API_KEY')) {
+    if ($Auto) { Fail '本機 .env 和 Vercel 都沒有 GEMINI_API_KEY：雲端一定要有 Gemini 金鑰（備援大腦和即時通話都靠它）' }
     $g = Read-Host '  本機 .env 沒有 Gemini 金鑰，請貼上（AI Studio → Get API key）' -AsSecureString
     $gemini = [Runtime.InteropServices.Marshal]::PtrToStringBSTR([Runtime.InteropServices.Marshal]::SecureStringToBSTR($g)).Trim()
     if (-not $gemini) { Fail '雲端一定要有 Gemini 金鑰（備援大腦和即時通話都靠它）' }
 }
 if ($gemini) { SetCloudEnv 'GEMINI_API_KEY' $gemini -Sensitive }
 
-# 固定的設定：只有你自己用，所以「我的背景」手機和電腦共用一份
-$fixed = [ordered]@{ APP_MODE = 'cloud'; LIVE_ENABLED = '1'; PROFILE_SCOPE = 'shared' }
+# 固定的設定：沒設過才設
+$fixed = [ordered]@{ APP_MODE = 'cloud'; LIVE_ENABLED = '1' }
 if (-not (OnCloud 'LLM_PROVIDER')) { $fixed['LLM_PROVIDER'] = 'gemini' }  # 同步 ChatGPT 後會自動換成 ChatGPT
 foreach ($k in $fixed.Keys) { if (-not (OnCloud $k)) { SetCloudEnv $k $fixed[$k] } }
+# 只有你自己用：「我的背景」手機和電腦共用一份（每次都設，確定是 shared）
+SetCloudEnv 'PROFILE_SCOPE' 'shared'
 
 # 本機有設的聲音和模型設定，雲端照抄，聽起來才會一樣
 foreach ($k in 'TTS_PROVIDER', 'GEMINI_TTS_MODEL', 'GEMINI_MODEL', 'GEMINI_COACH_MODEL', 'GEMINI_COACH_REASONING', 'ELEVENLABS_MODEL', 'LIVEAVATAR_SANDBOX') {
@@ -138,6 +156,8 @@ foreach ($k in 'ELEVENLABS_API_KEY', 'YATING_API_KEY', 'LIVEAVATAR_API_KEY') {
     $v = LocalEnv $k
     if ($v) { SetCloudEnv $k $v -Sensitive }
 }
+# 真人模式（HeyGen LiveAvatar）是雲端版的真人備案：有金鑰就打開（畫面上的開關還是可以關）
+if ((LocalEnv 'LIVEAVATAR_API_KEY') -or (OnCloud 'LIVEAVATAR_API_KEY')) { SetCloudEnv 'LIVEAVATAR_ENABLED' '1' }
 
 Say '== 4. 部署正式版（大約 1～2 分鐘）'
 $r = Vercel 'deploy --prod --yes'
@@ -157,17 +177,17 @@ SaveLocalEnv 'CLOUD_URL' $url
 Say "  網址：$url（已寫進本機 .env 的 CLOUD_URL）"
 
 Say '== 5. 自動檢查'
-if ($passcode) {
-    # 通行碼走環境變數，避開 PowerShell 5.1 傳參數時引號、空白的問題
-    $env:AIC_PASSCODE = $passcode
-    python -c "import os, subprocess, sys; sys.exit(subprocess.call([sys.executable, 'tools/smoke.py', sys.argv[1], os.environ['AIC_PASSCODE']]))" $url
-    Remove-Item Env:AIC_PASSCODE
-} else {
-    Say '  這次沒有換通行碼，略過自動檢查（要檢查就執行：python tools/smoke.py 網址 通行碼）'
-}
+python tools/smoke.py $url --open
+$smoke = $LASTEXITCODE
 
 Say ''
 Say '== 完成'
-Say "  1. 用手機或瀏覽器打開 $url ，輸入通行碼"
+Say "  1. 用手機或瀏覽器打開 $url ，不用登入就能練習（有網址的人都能用，不要亂傳）"
 Say '  2. 要讓雲端也用 ChatGPT：重開 start.bat → 左邊「AI 大腦」→「雲端版（Vercel）」'
 Say '     網址和同步密碼已經填好，直接按「登入並同步到雲端」，用自己的帳號登入'
+if (-not $hasStore) { Warn '  提醒：還沒接 Upstash，設定和 ChatGPT 同步在重新部署後會不見（上面的 V7 會沒過）' }
+if ($smoke -ne 0) {
+    Warn '  自動檢查有沒過的項目，請看上面標 FAIL 的那幾行'
+    exit 2
+}
+exit 0

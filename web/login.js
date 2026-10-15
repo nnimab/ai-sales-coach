@@ -36,11 +36,30 @@
     }
   }
 
+  // 不用登入就能練習的網站（AUTH_MODE=open）：這頁只給管理者改設定用
+  function adminOnly() {
+    document.title = '管理者 · AI 對練教練';
+    $('#loginSub').textContent = '練習不用登入，這裡的通行碼只用來改設定。';
+    $('#codeLabel').textContent = '管理者通行碼';
+    $('#loginFoot').innerHTML = '<a href="/">不用登入，直接去練習</a>';
+  }
+
   async function init() {
     try { nameEl.value = localStorage.getItem(NAME_KEY) || ''; } catch { /* 讀不到就空白 */ }
     const s = await session();
     if (s === null) {
       showError(OFFLINE);
+    } else if (s.setup) {
+      // 雲端還沒設定好：留在這頁列出缺什麼（不用登入的網站也是，不然會和首頁來回跳）
+      showSetup(s.setup_problems);
+      if (s.auth_required === false) {
+        $('#loginSub').textContent = '設定好之後，打開網址就能練習';
+        form.classList.add('hidden');
+        $('#loginFoot').classList.add('hidden');
+        return;
+      }
+    } else if (s.admin_login && s.role !== 'admin') {
+      adminOnly();
     } else if (s.logged_in || s.auth_required === false) {
       location.replace('/'); // 已經登入，或這裡不需要登入
       return;

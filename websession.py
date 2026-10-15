@@ -86,9 +86,12 @@ def passcode_ok(given, expected):
     return hmac.compare_digest(a, b)
 
 
-def passcode_version(expected):
-    """通行碼一改，舊的登入就失效。"""
-    return hashlib.sha256((expected or "").encode("utf-8")).hexdigest()[:12]
+def passcode_version(expected, secret):
+    """通行碼一改，舊的登入就失效。用 APP_SECRET 當鑰匙：cookie 裡看得到這段，也沒辦法拿去離線猜通行碼。"""
+    if not secret:
+        raise ValueError("沒有 APP_SECRET，不能簽發登入")
+    msg = ("passcode-version\n" + (expected or "")).encode("utf-8")
+    return hmac.new(secret.encode("utf-8"), msg, hashlib.sha256).hexdigest()[:12]
 
 
 def new_uid():

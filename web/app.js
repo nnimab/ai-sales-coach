@@ -107,7 +107,9 @@ const offline = () => (state.hosted
   ? '連不到雲端網站，請檢查網路後重新整理'
   : '連不到對練程式，請確認黑色視窗還開著，或重新執行 start.bat');
 const httpError = (status) => `伺服器回應錯誤（代碼 ${status}）`;
-const ADMIN_ONLY = '需要管理者通行碼：請登出後用管理者通行碼登入';
+// 不用登入的網站（雲端 AUTH_MODE=open）對一般訪客不提通行碼和登入
+const noLogin = () => state.status?.auth?.required === false;
+const adminOnly = () => (noLogin() ? '只有管理者能改設定' : '需要管理者通行碼：請登出後用管理者通行碼登入');
 
 // 雲端登入過期或還沒設定好：回登入頁（登入頁會列出缺什麼）
 let leaving = false;
@@ -144,7 +146,7 @@ async function api(path, body, signal) {
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     // 保留伺服器回的欄位（例如 field），編輯器才知道要標紅哪一格；需要管理者的由呼叫端照常跳通知
-    const e = new Error(res.status === 403 && data.admin ? ADMIN_ONLY : data.error || httpError(res.status));
+    const e = new Error(res.status === 403 && data.admin ? adminOnly() : data.error || httpError(res.status));
     e.data = data;
     throw e;
   }
@@ -574,7 +576,8 @@ const Brain = (() => {
 
   function auth(s) {
     const a = s.auth;
-    const show = !!a?.required;
+    // 要登入的網站才顯示；不用登入的網站只有用管理者通行碼登入的人看得到（才能登出）
+    const show = !!a?.required || a?.role === 'admin';
     $('#authSection').classList.toggle('hidden', !show);
     if (!show) return;
     $('#authName').textContent = a.name ? `已登入：${a.name}` : '已登入';
@@ -597,7 +600,7 @@ const Brain = (() => {
     const rest = (Array.isArray(s.chain) ? s.chain : []).filter((id) => id !== state.active);
     $('#brainChain').textContent = [
       rest.length ? `不能用時依序改用：${rest.map(brainName).join('、')}。` : '',
-      state.canAdmin ? '' : '只能看；要改設定請用管理者通行碼登入。',
+      state.canAdmin ? '' : noLogin() ? '只能看，設定由管理者調整。' : '只能看；要改設定請用管理者通行碼登入。',
     ].join('');
     notices(s);
     chatgpt(s, enter);
@@ -712,7 +715,7 @@ const Brain = (() => {
 
   $('#btnLogout').addEventListener('click', async () => {
     try { await api('/api/logout', {}); } catch { /* 照樣回登入頁 */ }
-    location.href = '/login';
+    location.href = noLogin() ? '/' : '/login'; // 不用登入的網站：登出管理者後直接回練習
   });
 
   return { render };

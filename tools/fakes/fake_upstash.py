@@ -26,6 +26,7 @@ class Upstash:
         self.data = {}  # 字串或 dict（hash）
         self.expiry = {}  # key → time.monotonic() 到期
         self.calls = []  # 每個指令的名稱（測快取用）
+        self.requests = []  # 每個 HTTP 請求的路徑（測「一次送出」用）
         self.fail_eval = False  # 模擬不支援 EVAL
         self.down = False  # 模擬資料庫掛掉（回 500）
 
@@ -206,6 +207,8 @@ class Upstash:
 
     def handle(self, path, payload):
         """回傳 (HTTP 狀態, JSON)。"""
+        with self.lock:
+            self.requests.append(path)
         if self.down:
             return 500, {"error": "ERR fake is down"}
         if path in ("", "/"):

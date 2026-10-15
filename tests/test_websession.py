@@ -1,5 +1,6 @@
 """websession.py：簽章、過期、cookie 格式、通行碼比對。"""
 
+import hashlib
 import time
 import unittest
 
@@ -12,7 +13,7 @@ SECRET = "x" * 40
 class WebSessionTests(unittest.TestCase):
     def payload(self, **kw):
         now = int(time.time())
-        p = {"uid": ws.new_uid(), "name": "小林", "role": "user", "pv": ws.passcode_version("1234"), "iat": now, "exp": now + 60}
+        p = {"uid": ws.new_uid(), "name": "小林", "role": "user", "pv": ws.passcode_version("1234", SECRET), "iat": now, "exp": now + 60}
         p.update(kw)
         return p
 
@@ -56,9 +57,18 @@ class WebSessionTests(unittest.TestCase):
         self.assertFalse(ws.passcode_ok("12345", "1234"))
         self.assertFalse(ws.passcode_ok("", ""))
         self.assertFalse(ws.passcode_ok(None, "1234"))
-        self.assertEqual(len(ws.passcode_version("1234")), 12)
-        self.assertNotEqual(ws.passcode_version("1234"), ws.passcode_version("5678"))
         self.assertEqual(len(ws.new_uid()), 32)
+
+    def test_passcode_version_is_keyed(self):
+        pv = ws.passcode_version("1234", SECRET)
+        self.assertEqual(len(pv), 12)
+        self.assertEqual(pv, ws.passcode_version("1234", SECRET))
+        self.assertNotEqual(pv, ws.passcode_version("5678", SECRET))
+        # 用 APP_SECRET 當鑰匙：cookie 裡看得到 pv，沒有 APP_SECRET 也沒辦法拿通行碼的雜湊去比對猜
+        self.assertNotEqual(pv, ws.passcode_version("1234", "y" * 40))
+        self.assertNotEqual(pv, hashlib.sha256(b"1234").hexdigest()[:12])  # 舊版：沒有鑰匙的雜湊
+        with self.assertRaises(ValueError):
+            ws.passcode_version("1234", "")
 
 
 if __name__ == "__main__":

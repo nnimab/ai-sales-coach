@@ -436,6 +436,28 @@ class RedisStoreTests(unittest.TestCase):
         self.assertEqual([self.s.eph_incr("rl:1.2.3.4", 600) for _ in range(3)], [1, 2, 3])
         self.assertGreater(self.raw("TTL", "t:eph:rl:1.2.3.4"), 590)
 
+    def test_eph_incr_sets_ttl_in_same_request(self):
+        # 建立計數和設期限在同一個交易（一個請求）：不會因為第二個請求失敗，留下永遠不會過期的計數
+        reqs, calls = len(self.srv.state.requests), len(self.srv.state.calls)
+        self.assertEqual(self.s.eph_incr("login:9.9.9.9", 600), 1)
+        self.assertEqual(self.srv.state.requests[reqs:], ["/multi-exec"])
+        self.assertNotIn("EXPIRE", self.srv.state.calls[calls:])
+        self.assertGreater(self.raw("TTL", "t:eph:login:9.9.9.9"), 590)
+        time.sleep(1.1)
+        self.assertEqual(self.s.eph_incr("login:9.9.9.9", 600), 2)
+        self.assertLess(self.raw("TTL", "t:eph:login:9.9.9.9"), 600)  # 固定的時間窗：再試不會延長
+        # 舊版留下沒有期限的計數：下一次就補上期限，不會永遠鎖住
+        self.raw("SET", "t:eph:login:stuck", "50")
+        self.assertEqual(self.raw("TTL", "t:eph:login:stuck"), -1)
+        self.assertEqual(self.s.eph_incr("login:stuck", 600), 51)
+        self.assertGreater(self.raw("TTL", "t:eph:login:stuck"), 590)
+        # 資料庫掛掉：丟 StoreError（呼叫端改用自己的記憶體數），不會留下沒有期限的 key
+        self.srv.state.down = True
+        with self.assertRaises(StoreError):
+            self.s.eph_incr("login:down", 600)
+        self.srv.state.down = False
+        self.assertEqual(self.raw("TTL", "t:eph:login:down"), -2)
+
     def test_lock_and_fresh_reads(self):
         a, b = self.store(), self.store()
         a.put_doc("voices", {"n": 1})

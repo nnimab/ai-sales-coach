@@ -1,10 +1,20 @@
 # 放到網路上（Vercel）
 
-照這份做完，你會有一個自己的網址（例如 `https://ai-coach.vercel.app`），用手機或別的電腦打開、輸入通行碼就能練習。
+照這份做完，你會有一個自己的網址（例如 `https://ai-coach.vercel.app`），用手機或別的電腦打開就能練習。
 
-**只限你本人使用。** 主管可以在旁邊看，但不要把通行碼給別人自己去用：雲端版用的是你一個人的 ChatGPT 方案，OpenAI 不允許共用帳號。
+**只限你本人使用。** 主管可以在旁邊看，但不要把網址（或通行碼）給別人自己去用：雲端版用的是你一個人的 ChatGPT 方案，OpenAI 不允許共用帳號。
 
-大約要 30 分鐘。全部在網頁上點，不用寫程式。
+## 最快的方法：雙擊 deploy.bat
+
+1. 第一次要先裝 Vercel 的指令工具：開「命令提示字元」執行 `npm i -g vercel`（要先裝 Node.js）。
+2. 雙擊 `demo` 資料夾裡的 `deploy.bat`。第一次會開瀏覽器請你登入 Vercel，也會提醒你接上資料庫（Upstash）。
+3. 跑完會印出網址。**打開就能用，不用登入**：有網址的人都能用，方便展示，所以不要亂傳。
+4. 改了程式，再雙擊一次就會更新（設好的亂碼不會被換掉）。
+
+之後想加通行碼：到 Vercel → Settings → Environment Variables，把 `AUTH_MODE` 改成 `passcode`、新增 `APP_PASSCODE`（你的通行碼），再 Redeploy。注意：之後再跑 deploy.bat 會改回不用登入。
+只想擋住「改設定」：新增 `ADMIN_PASSCODE`，練習照樣不用登入；要改設定時到 `網址/login` 輸入它。
+
+下面是不用 deploy.bat、全部在網頁上點的做法（大約 30 分鐘，不用寫程式；預設要輸入通行碼）。
 
 ## 雲端版能做什麼
 
@@ -73,6 +83,7 @@
 | 名字 | 什麼時候要填 |
 | --- | --- |
 | `ADMIN_PASSCODE` | 想讓別人只能看、不能改設定時，另設一組管理者通行碼。只有你自己用就不用填 |
+| `AUTH_MODE` | 填 `open`：不用登入，打開網址就能用（和 deploy.bat 一樣），這時 `APP_PASSCODE` 不用填 |
 | `ELEVENLABS_API_KEY`、`YATING_API_KEY` | 要用 ElevenLabs 或雅婷的聲音 |
 | `LIVEAVATAR_API_KEY` | 要用真人模式（HeyGen LiveAvatar），金鑰在 https://app.liveavatar.com/developers。加了之後到「聲音設定」打開、幫客戶挑臉 |
 | `LIVEAVATAR_SANDBOX` | 填 `1`：真人模式的測試模式，不扣點數，但只能用 Wayne、大約 1～2 分鐘就結束 |
@@ -139,7 +150,7 @@
 | 「聲音設定」不能貼金鑰 | 雲端版的金鑰要加在 Vercel 的環境變數，畫面上會寫要加哪一個名字 |
 | 客戶回話很慢、常說太忙 | Gemini 免費版尖峰時常塞車，到 AI Studio 開啟付費 |
 
-給技術人員：專案附的 `tools/smoke.py` 可以自動檢查部署，用法是 `python tools/smoke.py https://你的專案名.vercel.app 你的通行碼`。
+給技術人員：專案附的 `tools/smoke.py` 可以自動檢查部署，用法是 `python tools/smoke.py https://你的專案名.vercel.app 你的通行碼`；不用登入的網站（`AUTH_MODE=open`）改成 `python tools/smoke.py https://你的專案名.vercel.app --open`。
 
 ## 費用參考
 

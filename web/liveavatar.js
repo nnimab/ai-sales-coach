@@ -499,6 +499,8 @@ const FaceLink = (() => {
       get busy() { return !!utt || playing.size > 0; },
       get name() { return sess?.name || ''; },
       get sandbox() { return !!sess?.sandbox; },
+      // 開口通知到聲音真的到業務耳朵要多久：伺服器有給就用（自架比 HeyGen 快很多）
+      get heardLag() { return Number(sess?.heard_lag_sec) > 0 ? Number(sess.heard_lag_sec) : FaceAudio.HEARD_LAG_SEC; },
       get selfhost() { return sess?.provider === 'selfhost'; },
       get expression() { return shown; },
       get sessionId() { return sess?.session_id || ''; },

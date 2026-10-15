@@ -15,6 +15,7 @@ EXPRESSIONS = ("neutral", "worried", "annoyed", "happy")
 TOKEN_TTL = 600  # LiveKit 通行證 10 分鐘：只用來進房間，連上之後 LiveKit 會自己換新的
 WS_TTL = 300  # 控制連線的簽名 5 分鐘內要用掉
 KEEPALIVE_MS = 20000  # RunPod 的代理（Cloudflare）閒置 100 秒就斷：每 20 秒報一次平安
+HEARD_LAG_SEC = 0.25  # 實測：引擎說開口後約 0.15 秒聲音到台灣（HeyGen 要 0.6 秒）
 USER_AGENT = "AICoachDemo/1.0 (+faceengine)"
 
 

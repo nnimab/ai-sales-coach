@@ -3,8 +3,8 @@
 #   sh tools/runpod_sync.sh <連線資料夾>          （Git Bash，在 demo 資料夾裡跑）
 # 連線資料夾裡要有：id_pod（SSH 私鑰）、pod.json（{"id","ip","ports":{"22":埠}}），可以有 known_hosts。
 # 資料夾裡有 rp.py（RunPod API 小工具）的話，會先問 RunPod 最新的 IP 和 SSH 埠（Pod 重開後埠會變）。
-# 只送程式：根目錄的 .py、web/、scenarios/*.json、tools/runpod/。
-# 不送 .env、voices.json、profile.json、face/、.chatgpt/、scenarios/custom/、tts_cache/（那邊的資料在 /workspace/app_data）。
+# 只送程式：根目錄的 .py、web/、scenarios/*.json、tools/runpod/，加上 face/ 裡客戶的照片和待機底片（通話畫面要用）。
+# 不送 .env、voices.json、profile.json、.chatgpt/、scenarios/custom/、tts_cache/（那邊的資料在 /workspace/app_data）。
 set -eu
 DIR="${1:-${RUNPOD_DIR:-}}"
 [ -n "$DIR" ] && [ -f "$DIR/id_pod" ] && [ -f "$DIR/pod.json" ] || {
@@ -42,7 +42,7 @@ ssh_pod() {
     -o ConnectTimeout=20 -o LogLevel=ERROR "root@$IP" "$@"
 }
 
-FILES="$(ls *.py) web $(ls scenarios/*.json) tools/runpod"
+FILES="$(ls *.py) web $(ls scenarios/*.json) tools/runpod $(ls face/*_idle.mp4 face/*.webp face/*.jpg face/*.png 2>/dev/null)"
 for f in .env voices.json profile.json; do
   case " $FILES " in *" $f "*) echo "不應該送 $f" >&2; exit 1 ;; esac
 done

@@ -3786,7 +3786,8 @@ class Handler(BaseHTTPRequestHandler):
         self._json(200, {
             "session_id": sid, "livekit_url": lk_url, "livekit_client_token": viewer_token,
             "ws_url": engine.ws_url(ws_path, sid), "max_session_duration": AVATAR_MAX_SEC,
-            "provider": "selfhost", "keepalive_ms": faceengine.KEEPALIVE_MS, "sandbox": False, "name": "",
+            "provider": "selfhost", "keepalive_ms": faceengine.KEEPALIVE_MS, "heard_lag_sec": faceengine.HEARD_LAG_SEC,
+            "sandbox": False, "name": "",
         })
 
     def _avatar_stop(self, body):

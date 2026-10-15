@@ -3022,7 +3022,7 @@ const LiveCall = (() => {
   // 真人開口：從這時候（加上聲音傳過來的時間）算業務聽到多少；用 LiveAvatar 的時間，不用送出的時間
   function faceStarted(id) {
     if (cust && cust.utt === id && !cust.start) {
-      cust.start = performance.now() / 1000 + FaceAudio.HEARD_LAG_SEC;
+      cust.start = performance.now() / 1000 + (face?.heardLag ?? FaceAudio.HEARD_LAG_SEC);
       cust.end = cust.start + cust.sent / FaceAudio.BYTES_PER_SEC;
     }
   }

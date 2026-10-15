@@ -323,7 +323,7 @@ class PodServerTests(unittest.TestCase):
         self.assertEqual(st, 200, text)
         self.assert_no_secret(text)
         self.assertEqual(set(js), {"session_id", "livekit_url", "livekit_client_token", "ws_url", "max_session_duration",
-                                   "provider", "keepalive_ms", "sandbox", "name"})
+                                   "provider", "keepalive_ms", "heard_lag_sec", "sandbox", "name"})
         self.assertEqual((js["provider"], js["keepalive_ms"], js["livekit_url"], js["sandbox"]),
                          ("selfhost", 20000, "wss://fake-livekit.test", False))
         self.assertGreater(js["max_session_duration"], 0)

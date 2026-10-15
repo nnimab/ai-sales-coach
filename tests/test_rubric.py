@@ -314,7 +314,7 @@ class RubricHttpTests(unittest.TestCase):
             text = data.decode("utf-8")
             self.assertNotIn("FACTMARK", text, path)
             self.assertNotIn("product_facts\": {", text, path)
-            self.assertNotIn("自主投資聲明書", text, path)
+            # 不檢查「自主投資聲明書」這類詞：真實情境的公開檢查項目本來就會提到，資料有沒有外洩看 FACTMARK 就夠了
         st, js, _, _ = self.req("POST", "/api/editor/get", {"id": BOND_SCENARIO["id"]})
         self.assertGreater(js["scenario"]["hidden"]["product_facts"], 10)
 

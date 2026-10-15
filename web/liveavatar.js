@@ -7,10 +7,8 @@
 
 const FaceAudio = (() => {
   const BYTES_PER_SEC = 48000; // 24kHz、16-bit、單聲道（Gemini Live 給的就是這個格式，原樣轉過去，不能重新取樣）
-  // 官方建議第一包 0.6 秒、之後 1 秒，但要先湊滿才送，客戶開口會再晚 0.2～0.4 秒。
-  // 實測（沙盒）第一包 0.1～0.6 秒、之後 0.5 秒，真人開口的時間都差不多，也沒有 video_starvation，所以送小包
-  const FIRST_BYTES = 9600; // 每句第一包約 0.2 秒
-  const NEXT_BYTES = 24000; // 之後每包約 0.5 秒（base64 後約 32 KB，遠低於 1 MB 的上限）
+  const FIRST_BYTES = 28800; // 官方建議：每句第一包約 0.6 秒，讓真人先有一點緩衝
+  const NEXT_BYTES = 48000; // 之後每包約 1 秒（base64 後約 64 KB，遠低於 1 MB 的上限）
   // 實測（沙盒）：收到 speak_started 之後大約 0.6～0.7 秒，聲音才經過 LiveKit 傳到業務耳朵
   const HEARD_LAG_SEC = 0.6;
 
@@ -20,7 +18,7 @@ const FaceAudio = (() => {
     return Math.floor((n * 3) / 4) - (b64.endsWith('==') ? 2 : b64.endsWith('=') ? 1 : 0);
   }
 
-  // Gemini 一次給的聲音很短（幾十毫秒），湊成一包再送：每句第一包 0.2 秒、之後 0.5 秒
+  // Gemini 一次給的聲音很短（幾十毫秒），湊成一包再送：每句第一包 0.6 秒、之後 1 秒
   class PcmBatcher {
     constructor(first = FIRST_BYTES, next = NEXT_BYTES) {
       this.first = first - (first % 2); // 一包一定是完整的 16-bit 樣本
@@ -90,7 +88,7 @@ const FaceLink = (() => {
     connectMs: 8000, // LiveKit 房間、控制連線各等 8 秒
     readyMs: 15000, // 從響鈴算起，15 秒內真人畫面沒出來就改用語音
     keepAliveMs: 120000, // 閒置 5 分鐘會被收掉：官方建議每 2～3 分鐘報一次平安
-    flushMs: 100, // 不夠一包時最多等這麼久就先送：等越久，客戶開口越晚
+    flushMs: 400, // Gemini 的聲音來得比較慢時，最多等這麼久就先送，真人才不會沒聲音可講
     errorWindowMs: 30000, // 30 秒內出錯 3 次就放棄
     maxErrors: 3,
   };
@@ -290,21 +288,10 @@ const FaceLink = (() => {
       });
     }
 
-    // 瀏覽器預設會多緩衝一點讓播放更順；真人模式本來就比語音慢，請它盡量少緩衝、收到就播（不支援的瀏覽器就照舊）
-    function lowLatency(track) {
-      const rx = track?.receiver;
-      if (!rx) return;
-      try {
-        if ('jitterBufferTarget' in rx) rx.jitterBufferTarget = 0;
-        else if ('playoutDelayHint' in rx) rx.playoutDelayHint = 0;
-      } catch { /* 不支援就算了 */ }
-    }
-
     async function joinRoom(lk, gotVideo) {
       const { Room, RoomEvent, Track } = lk;
       room = new Room({ adaptiveStream: false, dynacast: false });
       room.on(RoomEvent.TrackSubscribed, (track, pub, participant) => {
-        lowLatency(track);
         if (track.kind === Track.Kind.Video) {
           speaker = participant?.identity || speaker;
           track.attach(o.video);

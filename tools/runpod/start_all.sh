@@ -9,6 +9,8 @@
 #   bash /workspace/start_all.sh link      開固定入口回報（/workspace/app/tools/runpod/live_link.py，每 5 分鐘把這台的網址報給
 #                                          Vercel，手機開 Vercel 的 /live 就會轉過來）；已經在跑就重開
 #   bash /workspace/start_all.sh status    看三個現在怎樣
+#   bash /workspace/start_all.sh use-ditto     臉孔引擎改用 Ditto（整張臉一起動）；記在 /workspace/face_engine/ENGINE，重開機也照這個
+#   bash /workspace/start_all.sh use-musetalk  退回 MuseTalk（預設；重開要 2～5 分鐘編譯）
 #   bash /workspace/start_all.sh stop-app  停掉對練教練（不再自動重開）
 #   bash /workspace/start_all.sh stop-link 停掉固定入口回報（不再自動重開；Vercel 15 分鐘後就當作真人版沒開）
 # 這支自己很快就結束，不會擋住開機（一定回 0）。
@@ -115,6 +117,7 @@ status() {
     alive "$LOG/$n.pid" && prog=yes
     echo "$n: 看顧=$loop 程式=$prog"
   done
+  echo "臉孔引擎用：$(tr -d '[:space:]' 2>/dev/null < "$W/face_engine/ENGINE" || true)（空白 = musetalk）"
   port_busy 8010 && echo "8010: 有人在用" || echo "8010: 沒有"
   port_busy 8765 && echo "8765: 有人在用" || echo "8765: 沒有"
 }
@@ -131,6 +134,14 @@ case "${1:-all}" in
     alive "$LOG/app.loop.pid" && kill "$(cat "$LOG/app.loop.pid")"
     alive "$LOG/app.pid" && kill "$(cat "$LOG/app.pid")"
     echo "[$(now)] 對練教練：已停止" ;;
+  use-ditto | use-musetalk)
+    echo "${1#use-}" > "$W/face_engine/ENGINE"
+    if alive "$LOG/engine.pid"; then
+      touch "$LOG/engine.restart"
+      kill "$(cat "$LOG/engine.pid")" 2>/dev/null # 看顧的迴圈會用新的引擎重開
+    fi
+    alive "$LOG/engine.loop.pid" || start_engine
+    echo "[$(now)] 臉孔引擎：改用 ${1#use-}，重開中（記錄 $LOG/engine.log）" ;;
   stop-link)
     alive "$LOG/link.loop.pid" && kill "$(cat "$LOG/link.loop.pid")"
     alive "$LOG/link.pid" && kill "$(cat "$LOG/link.pid")"

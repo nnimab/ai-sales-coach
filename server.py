@@ -2906,6 +2906,50 @@ ADMIN_ROUTES = {
 }
 
 
+# ---------------------------------------------------------------- 真人版的固定入口（RunPod）
+
+# Pod 重建後網址會換：手機永遠開 /live，這裡轉到 Pod 最近回報的網址（15 分鐘內有回報才算開著）。
+# Pod 每 5 分鐘 POST /api/live/register（tools/runpod/live_link.py），用 LIVE_LINK_SECRET 簽名；兩個都不走登入
+LIVE_PAGE = "/live"
+LIVE_REGISTER = "/api/live/register"
+LIVE_LINK_PATHS = {LIVE_PAGE, LIVE_REGISTER}
+LIVE_DOC = "live_link"  # 資料：{"url", "ts"}（本機、RunPod 是 DATA_DIR 的 live_link.json，雲端在 Upstash）
+# 只轉到 RunPod 代理上的 8765（對練教練），不能帶路徑或查詢字串：簽名的金鑰外流也不會變成任意轉址
+LIVE_URL_RE = re.compile(r"https://[a-z0-9]{8,24}-8765\.proxy\.runpod\.net/?")
+LIVE_FRESH_SEC = 15 * 60
+LIVE_SKEW_SEC = 300  # Pod 的時間和這裡最多差幾秒；太舊的回報（被錄下來重送的）不收
+LIVE_BODY_MAX = 2048
+_LIVE_SIG_RE = re.compile(r"[0-9a-fA-F]{64}")
+
+
+def live_link_secret():
+    return (ENV.get("LIVE_LINK_SECRET") or "").strip()
+
+
+def live_url_ok(url):
+    return isinstance(url, str) and LIVE_URL_RE.fullmatch(url) is not None
+
+
+def live_link_sig(secret, url, ts):
+    return hmac.new(secret.encode("utf-8"), f"{url}\n{ts}".encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def live_link_target(now=None):
+    """Pod 最近回報、而且還算開著的網址；沒有（或資料庫讀不到）就是空字串。"""
+    try:
+        doc = STORE.get_doc(LIVE_DOC)
+    except (StoreError, ValueError) as e:
+        log_once("live-link", f"[真人版] 讀不到 Pod 的網址：{type(e).__name__}")
+        return ""
+    if not isinstance(doc, dict):
+        return ""
+    url, ts = doc.get("url"), doc.get("ts")
+    if not live_url_ok(url) or type(ts) is not int:
+        return ""
+    age = int(time.time() if now is None else now) - ts
+    return url if age < LIVE_FRESH_SEC else ""
+
+
 # ---------------------------------------------------------------- HTTP
 
 
@@ -2963,6 +3007,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._chatgpt_callback(url)
         if path == "/login":
             return self._static("/login.html")
+        if path == LIVE_PAGE:
+            return self._live_page()
         if path.startswith("/face/"):
             return self._face(path)
         return self._static(path)
@@ -3003,18 +3049,22 @@ class Handler(BaseHTTPRequestHandler):
             "/api/chatgpt/sync/host": self._sync_host,
             "/api/chatgpt/sync/import": self._sync_import,
             "/api/chatgpt/sync/clear": self._sync_clear,
+            LIVE_REGISTER: self._live_register,
         }
         handler = routes.get(path)
         if handler is None:
             return self._json(404, {"error": "not found"})
-        if not self._same_origin():
+        signed = path == LIVE_REGISTER  # Pod 自己送的（不是瀏覽器）：不看來源，改用簽名驗證
+        if not signed and not self._same_origin():
             where = "只接受從對練網頁送出的請求" if ON_CLOUD else "只接受從這台電腦的對練網頁送出的請求"
             return self._json(403, {"error": where})
         if path in ADMIN_ROUTES and not self._require_admin():
             return
         try:
             length = int(self.headers.get("Content-Length") or 0)
-            if length > MAX_BODY:
+            if length < 0:
+                raise ValueError("negative Content-Length")
+            if length > (LIVE_BODY_MAX if signed else MAX_BODY):
                 return self._json(413, {"error": "資料太大"})
             body = json.loads(self.rfile.read(length).decode("utf-8") or "{}") if length else {}
         except (ValueError, UnicodeDecodeError):
@@ -3089,6 +3139,8 @@ class Handler(BaseHTTPRequestHandler):
         CTX.uid, CTX.role = "", ""
         if path in SYNC_PATHS:
             return True  # 本機程式直接呼叫，自己用 X-Sync-Key 驗證
+        if path in LIVE_LINK_PATHS:
+            return True  # 真人版的固定入口：誰都能開（不發 cookie）；Pod 的回報自己驗簽名
         problem = auth_setup_problem()
         if problem:
             if path in OPEN_PATHS:
@@ -3195,6 +3247,39 @@ class Handler(BaseHTTPRequestHandler):
 
     def _logout(self, body):
         self._extra.append(("Set-Cookie", websession.clear_cookie(self._secure())))
+        self._json(200, {"ok": True})
+
+    # ---- 真人版的固定入口（RunPod）
+
+    def _live_page(self):
+        """/live：Pod 開著就轉過去，沒開就說明一下、給一般版的連結（兩種都不快取）。"""
+        url = live_link_target()
+        if url:
+            return self._redirect(url)
+        self._static("/live.html")
+
+    def _live_register(self, body):
+        """Pod 回報自己的網址。簽名 = HMAC-SHA256(LIVE_LINK_SECRET, f"{url}\\n{ts}")；不對一律 403、不說原因。"""
+        secret = live_link_secret()
+        url, ts, sig = body.get("url"), body.get("ts"), body.get("sig")
+        ok = (bool(secret) and isinstance(url, str) and type(ts) is int and isinstance(sig, str)
+              and _LIVE_SIG_RE.fullmatch(sig) is not None and abs(int(time.time()) - ts) <= LIVE_SKEW_SEC)
+        if ok:
+            want = live_link_sig(secret, url, ts)
+            ok = hmac.compare_digest(want.encode("ascii"), sig.lower().encode("ascii")) and live_url_ok(url)
+        if not ok:
+            return self._json(403, {"error": "forbidden"})
+        url = url.rstrip("/") + "/"
+        try:
+            old = STORE.get_doc(LIVE_DOC)
+        except ValueError:  # 檔案壞了：當作沒有，直接蓋掉
+            old = None
+        old = old if isinstance(old, dict) else {}
+        if type(old.get("ts")) is int and old["ts"] > ts:
+            return self._json(200, {"ok": True})  # 比已經記下的還舊（重送的舊回報）：不蓋掉
+        STORE.put_doc(LIVE_DOC, {"url": url, "ts": ts})
+        if old.get("url") != url:
+            self.log_message("[真人版] 固定入口改轉到 %s", url)
         self._json(200, {"ok": True})
 
     # ---- ChatGPT 訂閱

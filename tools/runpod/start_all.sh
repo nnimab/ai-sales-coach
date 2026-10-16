@@ -1,12 +1,16 @@
 #!/bin/bash
-# RunPod 開機時把「自架臉孔引擎」和「對練教練」在背景開好，當掉自動重開；記錄在 /workspace/logs/{engine,app}.log。
+# RunPod 開機時把「自架臉孔引擎」、「對練教練」和「固定入口回報」在背景開好，當掉自動重開；
+# 記錄在 /workspace/logs/{engine,app,link}.log。
 # Pod 的 Container Start Command（先開我們的，再跑 RunPod 原本的 /start.sh，SSH 照常）：
 #   bash -c "bash /workspace/start_all.sh; exec /start.sh"
 # 也可以單獨用：
-#   bash /workspace/start_all.sh app      開對練教練；已經在跑就重開（換新版程式碼）
-#   bash /workspace/start_all.sh engine   開臉孔引擎（/workspace/face_engine/run.sh；還沒有就等它出現，8010 已經有人開著就不動）
-#   bash /workspace/start_all.sh status   看兩個現在怎樣
-#   bash /workspace/start_all.sh stop-app 停掉對練教練（不再自動重開）
+#   bash /workspace/start_all.sh app       開對練教練；已經在跑就重開（換新版程式碼）
+#   bash /workspace/start_all.sh engine    開臉孔引擎（/workspace/face_engine/run.sh；還沒有就等它出現，8010 已經有人開著就不動）
+#   bash /workspace/start_all.sh link      開固定入口回報（/workspace/app/tools/runpod/live_link.py，每 5 分鐘把這台的網址報給
+#                                          Vercel，手機開 Vercel 的 /live 就會轉過來）；已經在跑就重開
+#   bash /workspace/start_all.sh status    看三個現在怎樣
+#   bash /workspace/start_all.sh stop-app  停掉對練教練（不再自動重開）
+#   bash /workspace/start_all.sh stop-link 停掉固定入口回報（不再自動重開；Vercel 15 分鐘後就當作真人版沒開）
 # 這支自己很快就結束，不會擋住開機（一定回 0）。
 set -u
 W=/workspace
@@ -56,6 +60,14 @@ loop_engine() {
   done
 }
 
+# 固定入口回報：沒設 LIVE_LINK_SECRET、LIVE_LINK_TARGET 時它只說一次「沒有設定」，之後安靜地等
+loop_link() {
+  local py="$W/app/tools/runpod/live_link.py"
+  while true; do
+    if [ -f "$py" ]; then run_once link env PYTHONUNBUFFERED=1 PYTHONIOENCODING=utf-8 python3 "$py"; else sleep 30; fi
+  done
+}
+
 spawn() { # 名稱：在背景開一個不會跟著 SSH 結束的迴圈
   local name=$1
   if alive "$LOG/$name.loop.pid"; then return 1; fi
@@ -84,8 +96,20 @@ start_engine() {
   fi
 }
 
+start_link() {
+  if spawn link; then
+    echo "[$(now)] 固定入口回報：開始（記錄 $LOG/link.log）"
+  elif alive "$LOG/link.pid"; then
+    touch "$LOG/link.restart"
+    kill "$(cat "$LOG/link.pid")" 2>/dev/null # 迴圈還在：只重開程式，新版程式碼才會生效
+    echo "[$(now)] 固定入口回報：重開中（記錄 $LOG/link.log）"
+  else
+    echo "[$(now)] 固定入口回報：已經在跑（記錄 $LOG/link.log）"
+  fi
+}
+
 status() {
-  for n in engine app; do
+  for n in engine app link; do
     loop=no; prog=no
     alive "$LOG/$n.loop.pid" && loop=yes
     alive "$LOG/$n.pid" && prog=yes
@@ -98,15 +122,22 @@ status() {
 case "${1:-all}" in
   _loop_app) loop_app ;;
   _loop_engine) loop_engine ;;
+  _loop_link) loop_link ;;
   app) start_app ;;
   engine) start_engine ;;
+  link) start_link ;;
   status) status ;;
   stop-app)
     alive "$LOG/app.loop.pid" && kill "$(cat "$LOG/app.loop.pid")"
     alive "$LOG/app.pid" && kill "$(cat "$LOG/app.pid")"
     echo "[$(now)] 對練教練：已停止" ;;
+  stop-link)
+    alive "$LOG/link.loop.pid" && kill "$(cat "$LOG/link.loop.pid")"
+    alive "$LOG/link.pid" && kill "$(cat "$LOG/link.pid")"
+    echo "[$(now)] 固定入口回報：已停止" ;;
   all | *)
     start_engine
-    start_app ;;
+    start_app
+    start_link ;;
 esac
 exit 0

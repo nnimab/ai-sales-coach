@@ -247,6 +247,8 @@ class FileStore(_Local, Store):
     def _doc_path(self, name):
         if name == "voices":
             return self.voices_path
+        if name == "live_link":  # 真人版（RunPod）最近回報的網址
+            return self.root / "live_link.json"
         name = str(name)
         if name == "profile" or name.startswith("profile:"):
             uid = name.partition(":")[2]

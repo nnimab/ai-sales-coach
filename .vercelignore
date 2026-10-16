@@ -5,6 +5,7 @@
 .vercel/
 voices.json
 profile.json
+live_link.json
 tts_cache/
 scenarios/custom/
 __pycache__/

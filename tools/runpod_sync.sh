@@ -3,7 +3,8 @@
 #   sh tools/runpod_sync.sh <連線資料夾>          （Git Bash，在 demo 資料夾裡跑）
 # 連線資料夾裡要有：id_pod（SSH 私鑰）、pod.json（{"id","ip","ports":{"22":埠}}），可以有 known_hosts。
 # 資料夾裡有 rp.py（RunPod API 小工具）的話，會先問 RunPod 最新的 IP 和 SSH 埠（Pod 重開後埠會變）。
-# 只送程式：根目錄的 .py、web/、scenarios/*.json、tools/runpod/，加上 face/ 裡客戶的照片和待機底片（通話畫面要用）。
+# 只送程式：根目錄的 .py、web/、scenarios/*.json、tools/runpod/（含固定入口回報 live_link.py），
+# 加上 face/ 裡客戶的照片和待機底片（通話畫面要用）。
 # 不送 .env、voices.json、profile.json、.chatgpt/、scenarios/custom/、tts_cache/（那邊的資料在 /workspace/app_data）。
 set -eu
 DIR="${1:-${RUNPOD_DIR:-}}"
@@ -61,6 +62,8 @@ tar --owner=0 --group=0 --exclude='__pycache__' --exclude='*.pyc' -cf - $FILES |
   mv /workspace/app.new /workspace/app
   rm -rf /workspace/app.old
   bash /workspace/start_all.sh app
+  bash /workspace/start_all.sh link
   sleep 3
   tail -n 6 /workspace/logs/app.log
+  tail -n 1 /workspace/logs/link.log 2>/dev/null || true
 '

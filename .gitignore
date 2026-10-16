@@ -3,6 +3,7 @@
 .env.local
 voices.json
 profile.json
+live_link.json
 # ChatGPT 登入資料（token）
 .chatgpt/
 # Vercel 指令產生的本機連結資料

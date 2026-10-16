@@ -129,6 +129,27 @@
 - ChatGPT 用量到上限、登入過期或暫時不能用時，**Gemini 會自動接手**，練習不會中斷。
 - 不想讓雲端再用你的 ChatGPT：雲端版「AI 大腦」→「清除雲端的 ChatGPT 憑證」。
 
+## 真人版（RunPod）的固定網址
+
+RunPod 的 Pod 重建後網址會換。手機一律開 `https://你的專案名.vercel.app/live`：
+
+- 真人版開著：直接轉到現在那台 Pod。
+- 真人版沒開（15 分鐘沒收到 Pod 的回報）：顯示「真人版目前沒有開」，可以按一下改用一般版。
+- 這個網址不用登入、不用通行碼。
+
+要打開這個功能：
+
+1. 想一組夠長的密碼（例如 40 個以上的英數字），當作 `LIVE_LINK_SECRET`。
+2. Vercel：加環境變數 `LIVE_LINK_SECRET`（就是那組密碼），然後 Redeploy。
+3. RunPod 的 Pod 設定（Environment Variables）：
+   - `LIVE_LINK_SECRET`：同一組密碼
+   - `LIVE_LINK_TARGET`：`https://你的專案名.vercel.app`
+4. Pod 開機時 `start_all.sh` 會一起開「固定入口回報」（`tools/runpod/live_link.py`），每 5 分鐘把 Pod 的網址報給 Vercel；用 `sh tools/runpod_sync.sh` 同步程式時也會重開它。
+   - 看狀態：`bash /workspace/start_all.sh status`；記錄在 `/workspace/logs/link.log`。
+   - 手動送一次：`python3 /workspace/app/tools/runpod/live_link.py --once`
+
+回報要用這組密碼簽名，而且只接受 `https://<Pod 代號>-8765.proxy.runpod.net` 這種網址，別人沒辦法把 `/live` 轉到別的網站。
+
 ## 之後要改東西
 
 - **改程式**：在 GitHub Desktop 按 Commit，再按 Push origin。Vercel 會自動重新部署。

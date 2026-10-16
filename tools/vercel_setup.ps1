@@ -156,6 +156,10 @@ foreach ($k in 'ELEVENLABS_API_KEY', 'YATING_API_KEY', 'LIVEAVATAR_API_KEY') {
     $v = LocalEnv $k
     if ($v) { SetCloudEnv $k $v -Sensitive }
 }
+# 真人版固定入口（/live）：RunPod 的 Pod 回報網址時用的簽名金鑰。本機沒有就產生一個存進 .env；Pod 的環境變數要設同一個
+$liveLink = LocalEnv 'LIVE_LINK_SECRET'
+if (-not $liveLink) { $liveLink = NewSecret; SaveLocalEnv 'LIVE_LINK_SECRET' $liveLink }
+SetCloudEnv 'LIVE_LINK_SECRET' $liveLink -Sensitive
 # 真人模式（HeyGen LiveAvatar）是雲端版的真人備案：有金鑰就打開（畫面上的開關還是可以關）
 if ((LocalEnv 'LIVEAVATAR_API_KEY') -or (OnCloud 'LIVEAVATAR_API_KEY')) { SetCloudEnv 'LIVEAVATAR_ENABLED' '1' }
 

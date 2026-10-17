@@ -1,0 +1,5 @@
+{"expressions": {
+  "neutral": {"dir": "neutral", "loop": "forward"},
+  "worried": {"dir": "worried_s7", "loop": "pingpong", "intro": 45},
+  "happy": {"dir": "happy_s7", "loop": "pingpong", "intro": 30}
+}}

@@ -1,0 +1,15 @@
+Face engine (phase 2A) for the AI sales-coach demo.
+
+Parts of this engine are derived from LiveTalking (https://github.com/lipku/LiveTalking),
+Copyright (c) lipku and contributors, licensed under the Apache License, Version 2.0:
+  - renderer.py: MuseTalk 1.5 model loading / inference path (avatars/musetalk: VAE, UNet, PositionalEncoding,
+    whisper feature extraction), used through the LiveTalking source tree at /workspace/LiveTalking.
+  - /workspace/mt/mt_prep.py (avatar preparation, adapted from avatars/musetalk/genavatar.py) and
+    /workspace/mt/mt_masks.py (blend masks via avatars/musetalk/utils/blending.py, face_parsing).
+You may obtain a copy of the Apache License 2.0 at http://www.apache.org/licenses/LICENSE-2.0
+Modifications: streaming whisper windows, batched GPU inference with torch.compile, GPU port of the
+compositing, LiveKit publishing, no watermark.
+
+MuseTalk (https://github.com/TMElyralab/MuseTalk): code MIT; model weights "available for any purpose,
+even commercially". sd-vae-ft-mse (MIT), whisper-tiny (MIT), face-parsing.PyTorch (MIT), face-alignment (BSD-3).
+Base clips generated with Wan2.2-TI2V-5B (Apache-2.0).

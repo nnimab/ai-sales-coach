@@ -1,0 +1,9 @@
+coloredlogs.pth
+distutils-precedence.pth
+zz_base_venv.pth
+== coloredlogs.pth
+import os; exec('try: __import__("coloredlogs").auto_install() if os.environ.get("COLOREDLOGS_AUTO_INSTALL") else None\nexcept ImportError: pass')
+== distutils-precedence.pth
+import os; var = 'SETUPTOOLS_USE_DISTUTILS'; enabled = os.environ.get(var, 'local') == 'local'; enabled and __import__('_distutils_hack').add_shim(); 
+== zz_base_venv.pth
+/workspace/venv/lib/python3.11/site-packages

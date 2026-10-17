@@ -1,0 +1,13 @@
+gfpgan:
+GFPGANv1.4.pth
+LICENSE
+__pycache__
+gfpganv1_clean_arch.py
+stylegan2_clean_arch.py
+
+lt_models:
+wav2lip256.pth
+wav2lip256_avatar1.tar.gz
+
+torch_home:
+hub

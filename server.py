@@ -2486,6 +2486,11 @@ def json_timeout(p, last):
     return 120 if p["kind"] == "responses" and not last else 300
 
 
+# 評分整段（含換備援）的時限：Vercel 的函式最多跑 300 秒（vercel.json），超過會被直接砍掉、畫面拿不到任何回應。
+# json_timeout 是「每次等回應」的秒數，不是總時限，所以另外算
+EVAL_BUDGET_SEC = 270
+
+
 def is_backup(p):
     """這次回答的不是選的大腦（例如 ChatGPT 用量到上限或還沒同步，由 Gemini 接手）。"""
     return p["id"] != main_brain()
@@ -3694,10 +3699,19 @@ class Handler(BaseHTTPRequestHandler):
         cancel_observer()
         chain = brain_chain("eval")
         prompt = evaluation_messages(sc, msgs)
+        deadline = time.monotonic() + EVAL_BUDGET_SEC
+
+        def attempt(p, last):
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise LLMError("評分逾時", fallback=True, code="timeout")
+            return complete_json(p, prompt, EVAL_SCHEMA, 0.2, timeout=min(json_timeout(p, last), left), deadline=deadline)
+
         try:
-            raw, provider = run_chain(chain, lambda p, last: complete_json(
-                p, prompt, EVAL_SCHEMA, 0.2, timeout=json_timeout(p, last)))
+            raw, provider = run_chain(chain, attempt)
         except LLMError as e:
+            if e.code == "timeout" and time.monotonic() >= deadline - 0.5:
+                return self._json(504, {"error": f"評分超過 {EVAL_BUDGET_SEC} 秒還沒完成，AI 大腦可能比較忙"})
             return self._json(502, {"error": str(e)})
         used = labeled(provider)
         report = finalize_evaluation(raw, msgs, body.get("client_flags"), used, rubric_type(sc))

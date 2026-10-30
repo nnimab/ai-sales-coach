@@ -160,7 +160,7 @@ const FaceLink = (() => {
         s.onerror = () => {
           loading = null; // 下一通再試
           s.remove();
-          reject(new Error('載入不了真人畫面的元件（cdn.jsdelivr.net），請檢查網路'));
+          reject(netError('載入不了真人畫面的元件（cdn.jsdelivr.net），請檢查網路'));
         };
         document.head.appendChild(s);
       });
@@ -197,6 +197,11 @@ const FaceLink = (() => {
     let t = 0;
     const timer = new Promise((_, reject) => { t = setTimeout(() => reject(new Error(message)), ms); });
     return Promise.race([promise, timer]).finally(() => clearTimeout(t));
+  }
+
+  // 這台電腦的網路連不過去（不是伺服器說不行）：呼叫端可以記住，同一個分頁接下來先不試
+  function netError(message) {
+    return Object.assign(new Error(message), { network: true });
   }
 
   // opts：avatar（我們的頭像代號）、expression（自架真人一開始的表情）、api(path, body)、video／audio（要接上影像和聲音的元素）、
@@ -265,12 +270,12 @@ const FaceLink = (() => {
       if (sess) o.stopSession(sess.session_id, beacon);
     }
 
-    // 連不上或中途斷了：收乾淨；接通前就讓 ready 失敗，接通後通知呼叫端
-    function fail(reason) {
+    // 連不上或中途斷了：收乾淨；接通前就讓 ready 失敗（network：是這台電腦連不過去），接通後通知呼叫端
+    function fail(reason, network = false) {
       if (closed) return;
       shutdown(false);
       if (isReady) o.onFail?.(reason);
-      else settle.reject(new Error(reason));
+      else settle.reject(network ? netError(reason) : new Error(reason));
     }
 
     function close(why) {
@@ -319,11 +324,11 @@ const FaceLink = (() => {
         try {
           sock = new o.WebSocket(sess.ws_url);
         } catch {
-          reject(new Error('真人畫面的控制連線開不起來'));
+          reject(netError('真人畫面的控制連線開不起來'));
           return;
         }
         ws = sock;
-        const t = setTimeout(() => reject(new Error('真人畫面的控制連線沒有回應')), o.connectMs);
+        const t = setTimeout(() => reject(netError('真人畫面的控制連線沒有回應')), o.connectMs);
         sock.onmessage = (e) => {
           let m;
           try { m = JSON.parse(typeof e.data === 'string' ? e.data : new TextDecoder().decode(e.data)); } catch { return; }
@@ -335,8 +340,8 @@ const FaceLink = (() => {
         sock.onclose = () => {
           clearTimeout(t);
           const why = isReady ? endText() : '真人畫面的控制連線開不起來';
-          reject(new Error(why));
-          fail(why);
+          reject(isReady ? new Error(why) : netError(why));
+          fail(why, !isReady);
         };
       });
     }
@@ -384,13 +389,13 @@ const FaceLink = (() => {
       try {
         await withTimeout(room.connect(sess.livekit_url, sess.livekit_client_token, { autoSubscribe: true }), o.connectMs, '');
       } catch {
-        throw new Error('連不上真人畫面（LiveKit），可能是網路擋住了');
+        throw netError('連不上真人畫面（LiveKit），可能是網路或瀏覽器的擴充功能擋住了');
       }
       Promise.resolve().then(() => room?.startAudio?.()).catch(() => {});
     }
 
     async function run() {
-      readyTimer = setTimeout(() => fail('真人畫面太久沒出來'), o.readyMs);
+      readyTimer = setTimeout(() => fail('真人畫面太久沒出來', true), o.readyMs);
       const lkLoad = o.livekit();
       lkLoad.catch(() => {});
       const s = await o.api('/api/avatar/session', o.expression ? { avatar: o.avatar, expression: mood } : { avatar: o.avatar });
@@ -505,7 +510,7 @@ const FaceLink = (() => {
       get expression() { return shown; },
       get sessionId() { return sess?.session_id || ''; },
     };
-    run().catch((e) => fail(e?.message || '真人模式連不上'));
+    run().catch((e) => fail(e?.message || '真人模式連不上', !!e?.network));
     return link;
   }
 

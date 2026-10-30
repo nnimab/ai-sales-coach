@@ -518,6 +518,28 @@ a.pill { text-decoration: none; }
 .seg.sm button { height: 26px; padding: 0 11px; font-size: 12.5px; }
 .src-tag { align-self: flex-start; max-width: 100%; margin-top: 8px; padding: 2px 10px; border-radius: 999px; background: rgba(255, 255, 255, 0.12); font-size: 11.5px; color: rgba(255, 255, 255, 0.8); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-shadow: none; }
 .src-tag:empty { display: none; }
+/* 通話模式：即時通話還是一般模式（能不能插話）、客戶有沒有真人臉；換模式時連原因一起寫 */
+.mode-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; margin-top: 8px; }
+.mode-row .src-tag { margin-top: 0; }
+.mode-tag { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 2px 6px; max-width: 100%; padding: 3px 11px; border-radius: 999px; background: rgba(0, 0, 0, 0.45); font-size: 12px; color: #fff; text-shadow: none; }
+.mode-tag:empty { display: none; }
+.mode-tag b { font-weight: 600; }
+.mode-tag .mt-hint { color: rgba(255, 255, 255, 0.66); }
+.mode-tag .mt-note { color: var(--amber); }
+.mode-tag .mt-retry { padding: 0; border: 0; background: none; color: #fff; font: inherit; text-decoration: underline; cursor: pointer; }
+
+/* 接通中、重新連線中：舞台中間告訴業務在等什麼 */
+.stage-wait {
+  position: absolute; left: 50%; top: 42%; z-index: 2; display: flex; flex-direction: column; align-items: center; gap: 6px;
+  width: max-content; max-width: min(340px, calc(100% - 32px)); padding: 18px 22px; border-radius: 16px;
+  background: rgba(0, 0, 0, 0.62); -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
+  color: #fff; font-size: 13px; line-height: 1.5; text-align: center; transform: translate(-50%, -50%); pointer-events: none;
+}
+.stage-wait .spinner { width: 26px; height: 26px; margin-bottom: 6px; border: 2.5px solid rgba(255, 255, 255, 0.25); border-top-color: #fff; border-radius: 50%; animation: spin 0.8s linear infinite; }
+.stage-wait b { font-size: 16px; font-weight: 600; }
+.stage-wait span { color: rgba(255, 255, 255, 0.76); }
+.stage-wait-time { font-size: 12px; font-variant-numeric: tabular-nums; }
+.stage-wait-time:empty { display: none; }
 
 /* 下方：字幕串（最近幾句對話，夾著教練提示和合規警示）、右邊一排工具、輸入框和通話按鈕。
    整塊最多佔畫面下方 40%，字幕不會爬到客戶臉上 */
@@ -758,6 +780,8 @@ mark.bad { padding: 0 2px; border-radius: 4px; background: var(--mark); color: i
 .modal h2 { margin: 0; font-size: 22px; font-weight: 600; letter-spacing: -0.01em; }
 .call-status { margin-top: 4px; font-size: 14px; color: var(--text-3); }
 .call-scn { margin-top: 12px; font-size: 13.5px; color: var(--text-2); }
+.call-plan { margin-top: 6px; font-size: 12.5px; color: var(--text-3); }
+.call-plan:empty { display: none; }
 .call-buttons { display: flex; justify-content: center; gap: 64px; margin-top: 30px; }
 .cb { display: flex; flex-direction: column; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text-3); }
 .round { width: 62px; height: 62px; display: grid; place-items: center; border: none; border-radius: 50%; cursor: pointer; transition: transform 0.15s, opacity 0.15s; }
@@ -798,6 +822,8 @@ mark.bad { padding: 0 2px; border-radius: 4px; background: var(--mark); color: i
 .eval-steps li.active::before { border-color: var(--text); border-right-color: transparent; animation: spin 0.8s linear infinite; }
 .eval-steps li.done { color: var(--text-2); }
 .eval-steps li.done::before { border-color: var(--text-2); background: var(--text-2); }
+.eval-slow { margin: 18px 0 0 !important; }
+.eval-cancel { display: flex; margin: 18px auto 0; }
 
 /* ---------- 通知 ---------- */
 #toasts { position: fixed; top: 72px; left: 50%; z-index: 60; display: flex; flex-direction: column; align-items: center; gap: 8px; width: max-content; max-width: calc(100vw - 32px); transform: translateX(-50%); pointer-events: none; }

@@ -2515,6 +2515,7 @@ const Speech = {
 function showVoiceName() {
   const el = $('#voiceName');
   if (el) el.textContent = state.liveCall ? LiveCall.voiceName : Speech.voiceName;
+  renderModeTag();
 }
 
 if (window.speechSynthesis) {
@@ -2530,13 +2531,14 @@ const STATE_TEXT = {
   thinking: '客戶想一下…',
   listening: '客戶在聽你說',
   connecting: '接通中…',
+  reconnecting: '重新連線中…',
   ended: '通話已結束',
 };
 
 function setCustomerState(s) {
   const orb = $('#avatarStage');
   orb.classList.toggle('speaking', s === 'speaking');
-  orb.classList.toggle('thinking', s === 'thinking' || s === 'connecting');
+  orb.classList.toggle('thinking', s === 'thinking' || s === 'connecting' || s === 'reconnecting');
   orb.classList.toggle('listening', s === 'listening');
   $('#custState').dataset.state = s;
   $('#custStateText').textContent = STATE_TEXT[s] || '';
@@ -2563,6 +2565,104 @@ function setMicUi(mode) {
   st.textContent = state.liveCall ? MIC_STATE[mode] || '' : '';
   st.classList.toggle('muted', mode === 'muted');
 }
+
+// ------------------------------------------------------------------ 等待提示：接通中、重新連線中（舞台中間告訴業務在等什麼、等了多久）
+
+const Wait = (() => {
+  let timer = 0;
+  let since = 0;
+  function tick() {
+    const s = Math.floor((performance.now() - since) / 1000);
+    $('#stageWaitTime').textContent = s >= 3 ? `已等 ${s} 秒` : '';
+  }
+  return {
+    // 換下一個步驟時沿用同一個計時：顯示的是業務總共等了多久
+    show(title, sub) {
+      const box = $('#stageWait');
+      if (box.classList.contains('hidden')) {
+        since = performance.now();
+        clearInterval(timer);
+        timer = setInterval(tick, 500);
+      }
+      $('#stageWaitTitle').textContent = title;
+      $('#stageWaitSub').textContent = sub;
+      tick();
+      box.classList.remove('hidden');
+    },
+    hide() {
+      clearInterval(timer);
+      timer = 0;
+      $('#stageWait').classList.add('hidden');
+    },
+  };
+})();
+
+// ------------------------------------------------------------------ 通話模式：即時通話還是一般模式、客戶有沒有真人臉（換了就寫原因）
+
+const MODE_TEXT = {
+  live: ['即時通話', '可以隨時插話'],
+  normal: ['一般模式', '講完停 1.5 秒才送出'],
+};
+
+// 真人臉在這個分頁連不上過（多半是網路或瀏覽器的擴充功能擋住）：記在這個分頁，接下來的電話直接用語音，不用每通都等
+const FaceGate = {
+  KEY: 'faceBlocked',
+  blocked() {
+    try { return sessionStorage.getItem(this.KEY) || ''; } catch { return ''; }
+  },
+  block(why) {
+    try { sessionStorage.setItem(this.KEY, why); } catch { /* 存不了就算了，下一通再試 */ }
+  },
+  clear() {
+    try { sessionStorage.removeItem(this.KEY); } catch { /* 沒關係 */ }
+  },
+};
+
+const FACE_SKIP_NOTE = { noface: '這位客戶沒有真人臉', blocked: '真人臉剛才連不上，這個分頁先用語音' };
+
+// 這通要不要開真人臉：回傳不開的原因（空字串就是要開）。
+// 自架的只有做好臉的客戶才有；HeyGen 要在「聲音設定」幫這位客戶挑過臉孔（沒挑過伺服器會拒絕，每通都跳警告）
+function faceSkip(s) {
+  if (!state.face) return 'off';
+  const a = state.status?.avatar;
+  const who = s.customer.avatar;
+  if (a?.provider === 'selfhost' && Array.isArray(a.selfhost_faces) && !a.selfhost_faces.includes(who)) return 'noface';
+  if (a?.provider === 'heygen') {
+    const c = state.tts?.customers?.find((x) => x.avatar === who);
+    if (c && !c.face) return 'noface';
+  }
+  return FaceGate.blocked() ? 'blocked' : '';
+}
+
+// 來電畫面：接起來會是什麼模式
+function callPlan(s) {
+  if (!state.live) return `接通後：${MODE_TEXT.normal[0]}（${MODE_TEXT.normal[1]}）· 語音`;
+  const why = faceSkip(s);
+  const face = why === 'off' ? '語音' : why ? `語音（${FACE_SKIP_NOTE[why]}）` : '真人臉';
+  return `接通後：${MODE_TEXT.live[0]}（${MODE_TEXT.live[1]}）· ${face}`;
+}
+
+const FACE_PHASE = { on: '真人臉', waiting: '真人臉準備中…', off: '語音' };
+
+function renderModeTag() {
+  const el = $('#modeTag');
+  if (!el) return;
+  const [name, hint] = MODE_TEXT[state.liveCall ? 'live' : 'normal'];
+  let html = `<b>${name}</b><span class="mt-hint">${hint}</span>`;
+  if (!state.liveCall && state.callNote) html += `<span class="mt-note">（${esc(state.callNote)}）</span>`;
+  const f = state.liveCall ? LiveCall.faceState : { phase: 'off', note: '' };
+  html += `<span class="mt-hint">·</span><b>${FACE_PHASE[f.phase] || FACE_PHASE.off}</b>`;
+  if (f.note) html += `<span class="mt-note">（${esc(f.note)}）</span>`;
+  if (FaceGate.blocked() && state.face) html += '<button class="mt-retry" type="button" data-act="face-retry">再試真人臉</button>';
+  el.innerHTML = html;
+}
+
+$('#modeTag').addEventListener('click', (e) => {
+  if (!e.target.closest('[data-act="face-retry"]')) return;
+  FaceGate.clear();
+  renderModeTag();
+  toast('下一通電話會再試一次真人臉。', 'info', 4000);
+});
 
 // ------------------------------------------------------------------ 通話畫面的客戶：真人影像 > 本機的底片或照片（face/）> 畫的頭像
 
@@ -2862,6 +2962,10 @@ const VOICE_RMS = 0.012; // 音量超過這個才算在講話（瀏覽器已經�
 // 講完之後再多送 2 秒：Gemini Live 要自己聽到一段安靜才會判定講完、開始回話（只送 audioStreamEnd 它不會接話，實測過）
 const VOICE_HANG_MS = 2000;
 const VOICE_PREROLL = 8; // 開口前多送幾段（每段 40ms）
+const LIVE_CONNECT_MS = 10000; // 要通行證加上 Gemini 說 setupComplete，最多等這麼久就改用一般模式
+const HOLD_MAX = 375; // 換連線時業務的聲音最多先存 15 秒（每段 40ms）
+const ROTATE_MARGIN_MS = 4000; // Gemini 預告要換連線：一直等不到安靜的空檔，最晚在斷線前 4 秒硬換
+const OPENING_WAIT_MS = 12000; // 接通後客戶這麼久還沒開口，就收起「客戶準備開口」
 
 const LiveCall = (() => {
   let scenario = null;
@@ -2869,7 +2973,15 @@ const LiveCall = (() => {
   let pending = null; // 響鈴時就先連線，接起來客戶馬上能講
   let gen = 0;
   let handle = ''; // 連線大約 10 分鐘會被重置，拿它接回同一通電話
+  let canResume = false; // Gemini 說現在換連線不會掉東西（它正在想、正在講時是 false）
   let retries = 0;
+  let switching = false; // 正在換連線：業務的聲音先存在 held，接上新連線再補送
+  let held = [];
+  let rotating = null; // 收到 goAway 後先開好的新連線（成功時是 true）
+  let rotateTimer = 0;
+  let switchUiTimer = 0;
+  let opened = false; // 已經送出「（電話接通）」：這之前麥克風的聲音不送，客戶的開場白才不會被搶話
+  let openTimer = 0;
   let active = false;
   let muted = false;
   let voice = '';
@@ -2894,6 +3006,8 @@ const LiveCall = (() => {
   let faceAudio = null; // 真人的聲音（LiveKit 傳回來的），喇叭關掉時一起靜音
   let faceMood = null; // 自架真人的表情跟著信任度換（HeyGen 沒有表情）
   let quietTimer = 0; // 萬一沒收到真人「講完了」，估計的時間到了也換成在聽
+  let facePhase = 'off'; // 給模式標籤看：waiting 準備中、on 有真人臉、off 用語音
+  let faceNote = ''; // 沒有真人臉的原因
 
   // 算「業務聽到幾成」用的時鐘：自己播用 AudioContext 的時間，真人模式用真人開口的時間（都是秒）
   const clock = () => (faceOn ? performance.now() / 1000 : outCtx().currentTime);
@@ -2911,7 +3025,12 @@ const LiveCall = (() => {
     return btoa(s);
   }
 
+  // 換連線的那一兩秒：業務的聲音先存著，接上新連線再照順序補送，講的話不會被丟掉
   function send(obj) {
+    if (switching && obj.realtimeInput) {
+      if (held.length < HOLD_MAX) held.push(obj);
+      return;
+    }
     if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
   }
 
@@ -2925,27 +3044,58 @@ const LiveCall = (() => {
     return r ? `Gemini 中斷連線：${r}` : `Gemini 中斷連線（代碼 ${e.code}）`;
   }
 
-  // 伺服器發一張短效通行證（客戶的隱藏設定鎖在裡面），瀏覽器拿它直接連 Gemini
+  // 伺服器發一張短效通行證（客戶的隱藏設定鎖在裡面），瀏覽器拿它直接連 Gemini。
+  // 網路把連線吞掉時不會有任何回應：最多等 LIVE_CONNECT_MS，不然畫面會一直停在「接通中」
   async function open(resume) {
-    const t = await api('/api/live/token', { scenario_id: scenario.id, handle: resume ? handle : '' });
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), LIVE_CONNECT_MS);
+    const slow = () => new Error(`連不上 Gemini（等了 ${LIVE_CONNECT_MS / 1000} 秒沒有回應）`);
+    let t;
+    try {
+      t = await api('/api/live/token', { scenario_id: scenario.id, handle: resume ? handle : '' }, ctrl.signal);
+    } catch (e) {
+      clearTimeout(timer);
+      throw ctrl.signal.aborted ? slow() : e;
+    }
     voice = t.voice || voice;
     return new Promise((resolve, reject) => {
       const sock = new WebSocket(`${t.url}?access_token=${encodeURIComponent(t.token)}`);
       sock.binaryType = 'arraybuffer';
       const dec = new TextDecoder();
       let ready = false;
+      ctrl.signal.addEventListener('abort', () => {
+        if (ready) return;
+        sock.onclose = null;
+        try { sock.close(); } catch { /* 已經關了 */ }
+        reject(slow());
+      });
       sock.onopen = () => sock.send(JSON.stringify({ setup: { model: `models/${t.model}` } }));
       sock.onmessage = (e) => {
         let m;
         try { m = JSON.parse(typeof e.data === 'string' ? e.data : dec.decode(e.data)); } catch { return; }
-        if (m.setupComplete && !ready) { ready = true; resolve(sock); return; }
+        if (m.setupComplete && !ready) {
+          ready = true;
+          clearTimeout(timer);
+          resolve(sock);
+          return;
+        }
         if (sock === ws) onMessage(m);
       };
       sock.onclose = (e) => {
+        clearTimeout(timer);
         if (!ready) reject(new Error(reason(e)));
         else if (sock === ws) onClosed(e);
       };
     });
+  }
+
+  // 還在響鈴，先開好的連線就收到 goAway：還沒開始講，不用接續，直接換一條新的
+  function renewPending() {
+    const old = ws;
+    ws = null; // 舊連線關掉時不會被當成通話中斷線
+    try { old?.close(1000, 'renew'); } catch { /* 已經關了 */ }
+    handle = '';
+    connect();
   }
 
   function connect() {
@@ -2966,7 +3116,10 @@ const LiveCall = (() => {
     retries = 0;
     voice = '';
     connect();
-    if (state.face) openFace(s); // 和 Gemini 的通行證同時要，接起來就看得到人
+    const skip = faceSkip(s);
+    facePhase = skip ? 'off' : 'waiting';
+    faceNote = FACE_SKIP_NOTE[skip] || '';
+    if (!skip) openFace(s); // 和 Gemini 的通行證同時要，接起來就看得到人
   }
 
   function openFace(s) {
@@ -3000,17 +3153,24 @@ const LiveCall = (() => {
     Stage.face(on ? faceVideo : null);
   }
 
-  // 真人連不上或中途斷了：這通電話照常講，客戶的聲音改回這裡自己播
-  function dropFace(why) {
+  // 真人連不上或中途斷了：這通電話照常講，客戶的聲音改回這裡自己播。
+  // network：是這台電腦連不過去（已經記在這個分頁，接下來的電話先不試）
+  function dropFace(why, network = false) {
     const f = face;
     if (!f) return;
     const c = cust;
     const said = c?.start ? (performance.now() / 1000 - c.start) * FaceAudio.BYTES_PER_SEC : 0;
+    const wasOn = faceOn;
     face = null;
     faceOn = false;
+    facePhase = 'off';
+    faceNote = wasOn ? '真人臉斷線了，改用語音' : '真人臉連不上，改用語音';
     f.close();
     showFace(false);
-    toast(esc(why), 'warn', 8000, '真人模式連不上，這通改用語音');
+    const tip = network
+      ? '<br>可以改用 Edge 開啟，或先關掉 Proxy／VPN 類的擴充功能。這個分頁接下來的電話會直接用語音；要再試，按畫面上方的「再試真人臉」。'
+      : '';
+    toast(`${esc(why)}${tip}`, 'warn', network ? 12000 : 8000, wasOn ? '真人畫面斷線了，這通改用語音' : '真人模式連不上，這通改用語音');
     showVoiceName();
     if (!c || !c.pcm) return;
     // 這句還沒講完的部分接著在這裡播（時間改用本機的時鐘重算）
@@ -3043,54 +3203,64 @@ const LiveCall = (() => {
     }, (Math.max(0, left) + 2) * 1000);
   }
 
+  // 接起來到客戶開口要等的事：Gemini 連線（響鈴時就開始連）→ 真人畫面（最多到響鈴後 15 秒）→ Gemini 想開場白。
+  // 響鈴時間夠長的話前兩項早就好了，客戶馬上開口；一接起來就要等。每一步都在舞台中間寫出來，業務才知道要等
   async function start() {
     if (!pending || scenario !== state.scenario) prepare(state.scenario);
     active = true;
     muted = false;
+    opened = false;
     const myGen = gen;
     outCtx(); // 在使用者按下接聽的這一刻建立，瀏覽器才允許出聲（真人連不上時要改回自己播）
     face?.unlock();
     setCustomerState('connecting');
-    const faceWait = face ? face.ready.then(() => '', (e) => e.message || '真人模式連不上') : null;
+    Wait.show('接通中，請稍候', '正在連線 AI 客戶…');
+    // 麥克風和連線同時開：第一次用時，瀏覽器問權限的視窗在接聽時就跳出來，不會等到客戶開口才跳
+    const micOpen = startMic().then(() => false, () => true);
+    const faceWait = face ? face.ready.then(() => null, (e) => e) : null;
     try {
       await pending;
       if (!ws || ws.readyState !== WebSocket.OPEN) throw new Error('連線已經斷了');
     } catch (err) {
       if (!active || myGen !== gen) return;
-      fallBack(`${esc(err.message)}<br>這通改用一般模式（講完停一下才會送出）`, '即時對話連不上');
+      fallBack(`${esc(err.message)}<br>這通改用一般模式（講完停一下才會送出）`, '即時對話連不上', '即時通話連不上');
       return;
     }
     if (!active || myGen !== gen) return;
     if (faceWait) {
       // 真人畫面還沒好就再等一下（最多到響鈴後 15 秒），客戶的第一句才不會沒有畫面
-      const why = await faceWait;
+      Wait.show('接通中，請稍候', '正在準備真人畫面，最多約 15 秒；連不上會自動改用語音');
+      const err = await faceWait;
       if (!active || myGen !== gen) return;
-      if (why) dropFace(why);
-      else {
+      if (err) {
+        if (err.network) FaceGate.block(err.message);
+        dropFace(err.message || '真人模式連不上', !!err.network);
+      } else {
         faceOn = true;
+        facePhase = 'on';
+        faceNote = '';
         showFace(true);
         if (face.sandbox) toast('測試模式：真人影像大約 1～2 分鐘後結束，之後改用語音。', 'info', 6000);
       }
     }
     sendTurn('（電話接通）');
+    opened = true;
     setCustomerState('thinking');
+    Wait.show('接通了', '客戶準備開口…');
+    clearTimeout(openTimer);
+    openTimer = setTimeout(() => { if (active && myGen === gen && !switching) Wait.hide(); }, OPENING_WAIT_MS);
     showVoiceName();
-    try {
-      await startMic();
-      if (myGen !== gen) return;
-      setMicUi(mic ? 'live' : 'off');
-    } catch {
-      if (myGen !== gen) return;
-      setMicUi('off');
-      toast('麥克風打不開，請點網址列左邊的圖示允許麥克風，或先用打字。', 'warn', 7000);
-    }
+    const micFailed = await micOpen;
+    if (myGen !== gen) return;
+    setMicUi(mic ? 'live' : 'off');
+    if (micFailed) toast('麥克風打不開，請點網址列左邊的圖示允許麥克風，或先用打字。', 'warn', 7000);
   }
 
-  // 連不上或斷線接不回：收掉即時對話，這通改用一般模式（打字和講話都改走 /api/chat）
-  function fallBack(html, title) {
+  // 連不上或斷線接不回：收掉即時對話，這通改用一般模式（打字和講話都改走 /api/chat）；note 寫在模式標籤上
+  function fallBack(html, title, note) {
     stop();
     toast(html, 'warn', 9000, title);
-    switchToNormalCall();
+    switchToNormalCall(note);
   }
 
   function endStale() {
@@ -3100,7 +3270,14 @@ const LiveCall = (() => {
 
   function onMessage(m) {
     const up = m.sessionResumptionUpdate;
-    if (up?.resumable && up.newHandle) handle = up.newHandle;
+    if (up) {
+      canResume = !!up.resumable;
+      if (up.resumable && up.newHandle) handle = up.newHandle;
+    }
+    if (m.goAway) {
+      if (active) planRotate(m.goAway.timeLeft);
+      else renewPending();
+    }
     const sc = m.serverContent;
     if (!sc || !active) return;
     // 打字打斷客戶後，舊那段回話的聲音和字幕還會晚到：等到 interrupted 或 turnComplete 之前都丟掉
@@ -3117,8 +3294,80 @@ const LiveCall = (() => {
     }
   }
 
+  // 換連線開始：業務的聲音先存著（send 會收進 held）；畫面寫「重新連線中」。
+  // 收到預告後主動換的通常一秒內就好，超過 0.8 秒才跳出提示，免得畫面一直閃
+  function beginSwitch(sub, quietly) {
+    if (!switching) held = [];
+    switching = true;
+    clearTimeout(switchUiTimer);
+    const showIt = () => {
+      setCustomerState('reconnecting');
+      Wait.show('重新連線中，請稍候', `${sub}。你講的話會先存著，接上後自動補送`);
+    };
+    if (quietly) switchUiTimer = setTimeout(showIt, 800);
+    else showIt();
+  }
+
+  // 接上新連線：照順序補送存著的聲音
+  function endSwitch() {
+    clearTimeout(switchUiTimer);
+    switching = false;
+    const q = held;
+    held = [];
+    q.forEach(send);
+    Wait.hide();
+    setCustomerState(cust ? 'speaking' : 'listening');
+  }
+
+  // 雙方都沒在講話：這時候換連線不會切掉任何一句
+  function quiet() {
+    return !cust && !rep && !gate.open && !sources.length && !(faceOn && face?.busy);
+  }
+
+  // Gemini 預告要換連線了（goAway，大約每 10 分鐘一次，timeLeft 像 "50s"）：
+  // 趁雙方都沒在講話、Gemini 也沒在想的時候先開好新連線換過去，不等它斷線
+  function planRotate(timeLeft) {
+    if (rotateTimer || rotating || !handle) return;
+    const until = performance.now() + (parseFloat(timeLeft) || 20) * 1000;
+    const tick = () => {
+      rotateTimer = 0;
+      if (!active || switching || !ws) return;
+      const late = performance.now() > until - ROTATE_MARGIN_MS;
+      if ((canResume && quiet()) || late) {
+        rotate();
+        return;
+      }
+      rotateTimer = setTimeout(tick, 250);
+    };
+    tick();
+  }
+
+  function rotate() {
+    if (rotating || switching || !active || !handle || !ws) return;
+    const myGen = gen;
+    const old = ws;
+    beginSwitch('Gemini 大約每 10 分鐘會換一次連線', true);
+    rotating = open(true).then((sock) => {
+      if (myGen !== gen || !active) {
+        sock.close(1000);
+        return false;
+      }
+      ws = sock; // 舊連線之後的訊息不再處理
+      try { old.close(1000, 'rotate'); } catch { /* 已經關了 */ }
+      retries = 0;
+      endSwitch();
+      return true;
+    }, () => {
+      // 開不了新的：舊的還在就先用舊的撐著；舊的已經斷了，交給 onClosed 再接一次
+      if (myGen === gen && ws === old && old.readyState === WebSocket.OPEN) endSwitch();
+      return false;
+    }).finally(() => { rotating = null; });
+  }
+
   async function onClosed(e) {
     ws = null;
+    clearTimeout(rotateTimer);
+    rotateTimer = 0;
     if (!active) {
       // 響鈴時先開好的連線被關了：接聽時重新連
       pending = null;
@@ -3126,28 +3375,36 @@ const LiveCall = (() => {
       return;
     }
     const myGen = gen;
+    if (rotating) {
+      if (await rotating) return; // 收到預告後先開的新連線已經接上了
+      if (myGen !== gen || !active) return;
+    }
     if (handle && retries < 3) {
       retries += 1;
+      beginSwitch('剛才斷線了，正在接回同一通電話');
       try {
         const sock = await open(true);
         if (myGen !== gen || !active) { sock.close(1000); return; }
-        // 舊連線上客戶講到一半的那句不會有結尾了：先收掉（狀態也換回「在聽你說」），兩邊從頭開始
+        // 舊連線上客戶講到一半的那句不會有結尾了：先收掉（狀態也換回「在聽你說」）
         if (cust) cut();
         endStale();
-        gate = { open: false, lastLoud: 0, pre: [] };
+        // 有存著的聲音就接著判斷業務講完了沒（補送後還要送「講完了」）；沒有才從頭開始
+        if (!held.length) gate = { open: false, lastLoud: 0, pre: [] };
         ws = sock;
         retries = 0;
+        endSwitch();
         return;
       } catch { /* 接不回去就改用一般模式 */ }
     }
     if (myGen !== gen || !active) return;
-    fallBack(`${esc(reason(e))}<br>接不回去，這通改用一般模式（講完停一下才會送出）`, '通話中斷');
+    fallBack(`${esc(reason(e))}<br>接不回去，這通改用一般模式（講完停一下才會送出）`, '通話中斷', '即時通話斷線了');
   }
 
   function heardRep(t) {
     const now = performance.now();
     const text = liveText(t);
     if (!text.trim()) return;
+    if (!switching) Wait.hide(); // 業務已經開口了，不用再等客戶
     // 業務這一刻有沒有在出聲（gate.open 在講完後還會多開 2 秒，不能拿來判斷）
     const talking = now - gate.lastLoud < 400;
     // 1. 剛定案那句的尾巴晚到：接回同一個泡泡（業務正在插話打斷客戶時除外）
@@ -3193,6 +3450,8 @@ const LiveCall = (() => {
     if (!cust) {
       cust = { text: '', el: addBubble('customer', '', null, true), start: 0, end: 0 };
       setCustomerState('speaking');
+      clearTimeout(openTimer);
+      Wait.hide();
     }
     return cust;
   }
@@ -3235,7 +3494,7 @@ const LiveCall = (() => {
 
   // 業務用打字：客戶一樣會被打斷
   function sendText(text) {
-    if (!active || !ws || ws.readyState !== WebSocket.OPEN) {
+    if (!active || switching || !ws || ws.readyState !== WebSocket.OPEN) {
       // 還在接通或正在重新連線：這句先不送，放回輸入框
       if (!$('#textInput').value.trim()) $('#textInput').value = text;
       toast('即時對話還在連線，這句還沒送出，等一下再送。', 'warn', 4000);
@@ -3363,7 +3622,7 @@ const LiveCall = (() => {
     for (let i = 0; i < pcm.length; i += 1) sum += (pcm[i] / 32768) ** 2;
     const rms = Math.sqrt(sum / pcm.length);
     $('#btnMic').style.setProperty('--lvl', muted ? 0 : Math.min(1, rms * 5).toFixed(3));
-    if (!active) return;
+    if (!active || !opened) return;
     const now = performance.now();
     if (muted) {
       // 剛講完就按靜音：剩下的 2 秒改送安靜的聲音，Gemini 聽完才會接話
@@ -3423,6 +3682,15 @@ const LiveCall = (() => {
   function stop() {
     clearTimeout(repIdle);
     clearTimeout(reviseTimer);
+    clearTimeout(rotateTimer);
+    clearTimeout(switchUiTimer);
+    clearTimeout(openTimer);
+    rotateTimer = 0;
+    switching = false;
+    held = [];
+    canResume = false;
+    opened = false;
+    Wait.hide();
     endStale();
     gen += 1;
     const wasActive = active;
@@ -3469,6 +3737,7 @@ const LiveCall = (() => {
     prepare, start, stop, toggleMute, mood, speaker,
     send: sendText,
     get voiceName() { return `Gemini Live · ${voice || '預設聲音'}${faceTag()}`; },
+    get faceState() { return { phase: facePhase, note: faceNote }; },
   };
 })();
 
@@ -4042,6 +4311,7 @@ function startCall(id) {
   ringPhoto(s);
   $('#phoneName').textContent = s.customer.name;
   $('#phoneScn').textContent = s.title;
+  $('#phoneMode').textContent = callPlan(s);
   $('#phoneStatus').textContent = outgoing ? `準備撥給${s.customer.name}` : '來電中…';
   $('#acceptLabel').textContent = outgoing ? '撥出' : '接聽';
   openCallOverlay();
@@ -4147,7 +4417,7 @@ function beginSession() {
   const s = state.scenario;
   Object.assign(state, {
     messages: [], checklist: {}, alerts: [], ended: false, startedAt: Date.now(), partial: null,
-    repTurn: 0, coach: newCoach(), evalPending: false, fallbackNoted: false,
+    repTurn: 0, coach: newCoach(), evalPending: false, fallbackNoted: false, callNote: '',
   });
   state.hitWords.clear();
   updatePlanTag();
@@ -4231,10 +4501,11 @@ function startNormalCall() {
   Speech.say(text, onCustomerDone);
 }
 
-// 即時對話連不上或斷線接不回：這通改用一般模式繼續
-function switchToNormalCall() {
+// 即時對話連不上或斷線接不回：這通改用一般模式繼續（note：換過來的原因，寫在模式標籤上）
+function switchToNormalCall(note = '') {
   if (state.ended || !state.liveCall) return;
   state.liveCall = false;
+  state.callNote = note;
   setCallMode();
   setMicUi('off');
   api('/api/warmup', {}).catch(() => {});
@@ -4521,18 +4792,32 @@ async function endSession() {
   steps.forEach((li) => { li.className = ''; });
   steps[0].className = 'active';
   $('#evalNote').textContent = state.providerLabel.startsWith('本機') ? '本機模型大約需要 20～60 秒' : '大約需要 5～15 秒';
+  $('#evalSlow').classList.add('hidden');
   $('#evalOverlay').classList.remove('hidden');
   let k = 0;
   const stepTimer = setInterval(() => {
     if (k < steps.length - 1) { steps[k].className = 'done'; k += 1; steps[k].className = 'active'; }
   }, 4500);
+  // 可以按「取消評分」；伺服器那邊最多 270 秒，這裡多等一點網路時間還沒回就放棄，不會一直卡在這個畫面
+  const ctrl = new AbortController();
+  evalAbort = (why) => { evalWhy = why; ctrl.abort(); };
+  evalWhy = '';
+  const killTimer = setTimeout(() => evalAbort('timeout'), EVAL_TIMEOUT_MS);
+  const slowTimer = setTimeout(() => $('#evalSlow').classList.remove('hidden'), EVAL_SLOW_MS);
+  const settle = () => {
+    clearInterval(stepTimer);
+    clearTimeout(killTimer);
+    clearTimeout(slowTimer);
+    evalAbort = null;
+  };
   try {
     const report = await api('/api/evaluate', {
       scenario_id: state.scenario.id,
       messages: state.messages,
       client_flags: state.alerts.map(({ quote, issue }) => ({ quote, issue })),
-    });
-    clearInterval(stepTimer);
+    }, ctrl.signal);
+    if (ctrl.signal.aborted) throw new DOMException('aborted', 'AbortError'); // 讀到一半被取消：不要拿空的結果去畫報告
+    settle();
     state.evalPending = false;
     steps.forEach((li) => { li.className = 'done'; });
     await sleep(400);
@@ -4561,23 +4846,34 @@ async function endSession() {
     renderReport(report, ctx);
     if (report.fallback) toast(esc(tidy(`${brainName(state.provider)} 暫時不能用，這次評分改用 ${shortLabel(report.model) || brainName(report.brain)}`)), 'warn', 6000);
   } catch (err) {
-    clearInterval(stepTimer);
+    settle();
     state.evalBusy = false;
     $('#evalOverlay').classList.add('hidden');
+    const aborted = err?.name === 'AbortError';
+    const msg = !aborted ? esc(err.message) : evalWhy === 'cancel' ? '已經取消評分' : '評分太久沒有回應（等了將近 5 分鐘）';
+    const title = aborted && evalWhy === 'cancel' ? '已取消' : '評分失敗';
+    const kind = aborted && evalWhy === 'cancel' ? 'info' : 'error';
     if (state.liveCall) {
       // 即時對話已經掛斷，不能接著講：留在結束的狀態，再按一次只重新評分
       state.evalPending = true;
       setComposer(false);
       $('#micState').textContent = ''; // 不能再打字了，拿掉「可以打字」
       setCustomerState('ended');
-      toast(`${esc(err.message)}<br>通話已結束，可以再按一次「結束並評分」`, 'error', 8000, '評分失敗');
+      toast(`${msg}<br>通話已結束，可以再按一次「結束並評分」`, kind, 8000, title);
       return;
     }
     state.ended = false;
     startTimer();
-    toast(`${esc(err.message)}<br>可以再按一次「結束並評分」`, 'error', 8000, '評分失敗');
+    toast(`${msg}<br>可以再按一次「結束並評分」`, kind, 8000, title);
   }
 }
+
+const EVAL_TIMEOUT_MS = 285000; // 伺服器的評分最多 270 秒（server.py 的 EVAL_BUDGET_SEC）
+const EVAL_SLOW_MS = 30000; // 超過這麼久就說明「比平常久」
+let evalAbort = null;
+let evalWhy = '';
+
+$('#btnEvalCancel').addEventListener('click', () => { if (evalAbort) evalAbort('cancel'); });
 
 // ------------------------------------------------------------------ 評分報告
 

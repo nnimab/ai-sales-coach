@@ -118,7 +118,8 @@ function harness({ connectDelay = 0, failConnect = false, video = true, api, liv
     api: api || (async (p, body) => { h.calls.push([p, body]); return h.session; }),
     video: h.video,
     audio: h.audio,
-    livekit: async () => { if (livekitFails) throw new Error('載入不了'); return lib; },
+    // 真的載入器（loadLivekit）載入失敗時會標 network：這裡照做，測它有沒有一路傳到 ready
+    livekit: async () => { if (livekitFails) throw Object.assign(new Error('載入不了'), { network: true }); return lib; },
     WebSocket: FakeWS,
     stopSession: (id, beacon) => h.stops.push([id, beacon]),
     onStart: (id) => h.started.push(id),
@@ -371,6 +372,43 @@ test('LiveKit 元件載入失敗：剛開的工作階段也要收掉', async () 
   const h = harness({ livekitFails: true });
   await assert.rejects(h.link.ready, /載入不了/);
   assert.equal(h.stops.length, 1);
+});
+
+// 呼叫端靠 network 決定要不要記住「這個分頁先不試真人」：這台電腦連不過去才算，伺服器說不行不算
+const failure = async (h) => {
+  try {
+    await h.link.ready;
+  } catch (e) {
+    return e;
+  }
+  throw new Error('ready 應該要失敗');
+};
+
+test('連不過去的失敗都標 network：LiveKit、控制連線、影像太久、元件載入', async () => {
+  let h = harness({ failConnect: true });
+  await sleep(5);
+  h.ws().connected();
+  assert.equal((await failure(h)).network, true);
+  h = harness();
+  assert.equal((await failure(h)).network, true); // 控制連線沒有回應
+  h = harness();
+  await sleep(5);
+  h.ws().drop();
+  assert.equal((await failure(h)).network, true); // 控制連線一開就斷
+  h = harness({ video: false, readyMs: 120 });
+  await sleep(5);
+  h.ws().connected();
+  assert.equal((await failure(h)).network, true);
+  h = harness({ livekitFails: true });
+  assert.equal((await failure(h)).network, true);
+});
+
+test('伺服器說不行（沒挑臉孔、引擎忙）不標 network；掛斷也不標', async () => {
+  let h = harness({ api: async () => { throw new Error('自架真人引擎正在用'); } });
+  assert.ok(!(await failure(h)).network);
+  h = harness({ api: async () => { await sleep(40); return h.session; } });
+  h.link.close();
+  assert.ok(!(await failure(h)).network);
 });
 
 test('響鈴時就掛斷：伺服器晚到的工作階段馬上收掉', async () => {

@@ -283,6 +283,13 @@
               <div class="stage-glow" aria-hidden="true"></div>
               <div class="stage-shade" aria-hidden="true"></div>
             </div>
+            <!-- 接通中、重新連線中：告訴業務現在在等什麼 -->
+            <div class="stage-wait hidden" id="stageWait" role="status" aria-live="polite">
+              <div class="spinner" aria-hidden="true"></div>
+              <b id="stageWaitTitle"></b>
+              <span id="stageWaitSub"></span>
+              <span class="stage-wait-time" id="stageWaitTime"></span>
+            </div>
 
             <div class="call-top">
               <div class="ct-bar">
@@ -308,7 +315,10 @@
                     <button data-mode="exam" type="button">考核</button>
                   </div>
                 </div>
-                <span class="src-tag" id="voiceName" title="客戶的聲音和畫面"></span>
+                <div class="mode-row">
+                  <span class="mode-tag" id="modeTag"></span>
+                  <span class="src-tag" id="voiceName" title="客戶的聲音和畫面"></span>
+                </div>
               </div>
             </div>
 
@@ -469,6 +479,7 @@
     <h2 id="phoneName"></h2>
     <div class="call-status" id="phoneStatus"></div>
     <div class="call-scn" id="phoneScn"></div>
+    <div class="call-plan" id="phoneMode"></div>
     <div class="call-buttons">
       <div class="cb"><button class="round decline" id="btnDecline" type="button" aria-label="取消"><span data-icon="x"></span></button><span>取消</span></div>
       <div class="cb"><button class="round accept" id="btnAccept" type="button" aria-label="接聽"><span data-icon="phone"></span></button><span id="acceptLabel">接聽</span></div>
@@ -489,6 +500,8 @@
       <li>評估產品、銷售、合規</li>
       <li>產生建議說法</li>
     </ol>
+    <p class="sub eval-slow hidden" id="evalSlow">比平常久，可能是 AI 大腦比較忙。可以再等一下，或先取消，等一下再按「結束並評分」。</p>
+    <button class="pill ghost eval-cancel" id="btnEvalCancel" type="button">取消評分</button>
   </div>
 </div>
 

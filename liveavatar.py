@@ -68,7 +68,7 @@ def _error(status, detail):
     if "sandbox" in text:
         return AvatarError("測試模式只能用 Wayne 這個臉孔", status, detail, "sandbox")
     if "avatar" in text and (status == 404 or any(w in text for w in ("not found", "not exist", "invalid", "inactive"))):
-        return AvatarError("找不到這個真人臉孔，可能已經刪除：請到「聲音設定」重新挑一個", status, detail, "avatar")
+        return AvatarError("找不到這個真人臉孔，可能已經刪除：請到「系統設定」的真人模式重新挑一個", status, detail, "avatar")
     if status == 429 or "concurrent" in text or "too many" in text:
         return AvatarError("LiveAvatar 太忙或同時開了太多真人畫面，請等一下再試", status, detail, "busy")
     if status >= 500:

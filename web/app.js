@@ -92,6 +92,7 @@ const ICONS = {
   sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/>',
   cpu: '<rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6" rx="1"/><path d="M15 2v2"/><path d="M15 20v2"/><path d="M2 15h2"/><path d="M2 9h2"/><path d="M20 15h2"/><path d="M20 9h2"/><path d="M9 2v2"/><path d="M9 20v2"/>',
   external: '<path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>',
+  sliders: '<path d="M21 4h-7"/><path d="M10 4H3"/><path d="M21 12h-9"/><path d="M8 12H3"/><path d="M21 20h-5"/><path d="M12 20H3"/><path d="M14 2v4"/><path d="M8 10v4"/><path d="M16 18v4"/>',
 };
 
 function icon(name) {
@@ -202,8 +203,54 @@ function show(name) {
   $('.main').scrollTop = 0;
 }
 
+// ⓘ 收著的說明（id 是 ⓘ 按鈕 aria-controls 指的那一塊）：平常照使用者點開或收起；
+// must = 有狀況要處理（例如開關不能開的原因）：不用點就顯示，並用警示色
+function infoMust(id, must) {
+  const el = document.getElementById(id);
+  const btn = $(`.info-btn[aria-controls="${id}"]`);
+  el.dataset.must = must ? '1' : '';
+  el.classList.toggle('info-warn', must);
+  el.hidden = !(must || btn?.getAttribute('aria-expanded') === 'true');
+}
+
+// 管理選單（情境設定、系統設定）：業務每天只用得到對練、紀錄、我的背景，出題和系統設定收在這一組，
+// 平常收著；開或關記在這個瀏覽器。
+const ADMIN_VIEWS = ['scenarios', 'settings'];
+const AdminNav = {
+  KEY: 'aicoach.adminNav',
+  get open() { return $('#btnAdmin').getAttribute('aria-expanded') === 'true'; },
+  set(open, { remember = false, reveal = false } = {}) {
+    $('#btnAdmin').setAttribute('aria-expanded', String(open));
+    $('#adminNav').hidden = !open;
+    if (remember) {
+      try { localStorage.setItem(this.KEY, open ? '1' : '0'); } catch { /* 存不了就只管這一次 */ }
+    }
+    // 手機上選單是一列左右滑的：展開後把新出現的項目捲進畫面
+    if (open && reveal) $('#adminNav').lastElementChild.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  },
+  init() {
+    let saved = '';
+    try { saved = localStorage.getItem(this.KEY) || ''; } catch { /* 讀不到就收著 */ }
+    this.set(saved === '1');
+    $('#btnAdmin').addEventListener('click', () => this.set(!this.open, { remember: true, reveal: true }));
+  },
+};
+
 function setNav(name) {
   $$('.nav-item').forEach((b) => b.classList.toggle('active', b.dataset.nav === name));
+  // 進到管理裡的頁面（例如從情境編輯回到清單）：選單要打開，才看得到現在在哪一頁
+  const inAdmin = ADMIN_VIEWS.includes(name);
+  $('#btnAdmin').classList.toggle('has-active', inAdmin);
+  if (inAdmin) AdminNav.set(true);
+  // 手機上選單是一列左右滑的：現在這一頁的項目要看得到（只動左右，不動整頁的上下捲動）
+  const nav = $('.sb-nav');
+  const act = $('.nav-item.active', nav);
+  if (act && nav.scrollWidth > nav.clientWidth) {
+    const n = nav.getBoundingClientRect();
+    const r = act.getBoundingClientRect();
+    if (r.right > n.right) nav.scrollLeft += r.right - n.right + 8;
+    else if (r.left < n.left) nav.scrollLeft -= n.left - r.left + 8;
+  }
 }
 
 // 正在看的表單有沒有改到一半
@@ -229,9 +276,8 @@ function go(name) {
   if (name === 'history') renderHistory();
   if (name === 'rep') Rep.render();
   if (name === 'scenarios') ScenarioAdmin.renderList();
-  if (name === 'voices') renderVoices();
-  else stopPreview();
-  if (name === 'brain') Brain.render(true);
+  // 系統設定：以前的「聲音設定」和「AI 大腦」合成一頁，兩邊都要畫
+  if (name === 'settings') { renderVoices(); Brain.render(true); } else stopPreview();
   show(name);
   setNav(name);
 }
@@ -261,10 +307,11 @@ function brainName(id) {
   return shortLabel(p?.label) || id;
 }
 
-// 沒設定好的選項不能選；ChatGPT 要先登入（雲端版是從本機同步上去）
+// 還沒設定金鑰的大腦不列出來（列了也不能選，只會讓選單變長）；現在選的那個和 ChatGPT 一定列。
+// ChatGPT 要先登入（雲端版是從本機同步上去），還不能選時在後面寫原因
 function providerOptions(s) {
   const why = (p) => (p.id !== 'chatgpt' ? '（未設定）' : s.chatgpt?.mode === 'synced' ? '（未同步）' : '（未登入）');
-  return (s.providers || []).map((p) =>
+  return (s.providers || []).filter((p) => p.configured || p.id === s.provider || p.id === 'chatgpt').map((p) =>
     `<option value="${esc(p.id)}"${p.id === s.provider ? ' selected' : ''}${p.configured ? '' : ' disabled'}>${esc(p.label)}${p.configured ? '' : why(p)}</option>`).join('');
 }
 
@@ -293,7 +340,7 @@ function chatgptAlerts(prev, s) {
   if (c.cooldown_until > Date.now() / 1000 && c.cooldown_until !== prev.cooldown_until) {
     toast(`${esc(tidy(`用量已達上限，先改用 ${backup}。`))} <a href="${esc(usageUrl())}" target="_blank" rel="noopener">Manage usage</a>`, 'warn', 10000, 'ChatGPT 方案');
   } else if (c.needs_login && !prev.needs_login) {
-    const how = s.hosted ? '請在本機版按「登入並同步到雲端」' : '請到「AI 大腦」重新登入';
+    const how = s.hosted ? '請在本機版按「登入並同步到雲端」' : '請到「管理 → 系統設定」重新登入';
     toast(esc(tidy(`登入過期：${how}。先改用 ${backup}。`)), 'warn', 10000, 'ChatGPT');
   }
 }
@@ -305,12 +352,9 @@ function applyStatus(s) {
   state.provider = s.provider || '';
   state.active = s.active || s.provider || '';
   state.canAdmin = s.can_admin !== false;
-  const sig = JSON.stringify(s.providers) + s.provider + (s.chatgpt?.mode || '') + state.canAdmin;
-  if (sig !== state.statusSig) {
-    state.statusSig = sig;
-    $('#providerSelect').innerHTML = providerOptions(s);
-  }
-  $('#providerSelect').disabled = !state.canAdmin;
+  // 「AI 大腦」頁的選單靠這個判斷要不要重畫（側邊欄以前也有一個切換大腦的選單，現在只留在那一頁）
+  state.statusSig = JSON.stringify(s.providers) + s.provider + (s.chatgpt?.mode || '') + state.canAdmin;
+  // 側邊欄：大腦連不上（down）才會出現一行說明
   $('#provider').classList.toggle('ready', s.ready);
   $('#provider').classList.toggle('down', !s.ready);
   $('#providerMsg').textContent = s.message;
@@ -322,7 +366,7 @@ function applyStatus(s) {
   updatePlanTag();
   hostedCopy();
   chatgptAlerts(prev?.chatgpt, s);
-  if ($('#view-brain').classList.contains('active')) Brain.render();
+  if ($('#view-settings').classList.contains('active')) Brain.render();
 }
 
 let statusAt = 0;
@@ -365,8 +409,6 @@ async function setProvider(id) {
   refreshStatus();
 }
 
-$('#providerSelect').addEventListener('change', (e) => setProvider(e.target.value));
-
 // 主要大腦臨時不能用、這句改由備援回答：每通電話只提醒一次
 function noteFallback(label, brain) {
   if (state.fallbackNoted) return;
@@ -375,7 +417,59 @@ function noteFallback(label, brain) {
   setTimeout(refreshStatus, 800);
 }
 
-// ------------------------------------------------------------------ AI 大腦頁（文字大腦、ChatGPT 方案、即時通話）
+// ------------------------------------------------------------------ 系統設定頁最上面：現在的設定加起來，一通電話會是什麼樣子
+// 以前要看「AI 大腦」和「聲音設定」兩頁、四個開關才拼得出來。狀態或語音設定一變就重畫。
+
+let setupNowSig = '';
+function renderSetupNow() {
+  const s = state.status;
+  if (!s) return;
+  const t = state.tts;
+  const a = t?.avatar || s.avatar;
+  const custs = t?.customers || [];
+  const live = !!s.live; // 開著而且能用
+  const rows = [];
+  rows.push(['通話方式', live ? '即時通話' : '一般模式',
+    live ? '客戶即時回話，可以隨時插話'
+      : s.live_enabled ? '即時通話開著，但還不能用；講完停 1.5 秒才送出，客戶再回話'
+        : '講完停 1.5 秒才送出，客戶再回話']);
+  let face = ['只有聲音', '畫面上是畫的頭像'];
+  if (a?.on && live) {
+    if (a.provider === 'selfhost') {
+      const have = new Set(a.selfhost_faces || []);
+      const names = custs.filter((c) => have.has(c.avatar)).map((c) => c.name);
+      face = ['真人臉（自架）', names.length ? `有臉的客戶：${names.join('、')}；其他客戶只有聲音` : '引擎還沒準備好臉孔，這段時間只有聲音'];
+    } else if (a.sandbox) {
+      face = ['真人臉（HeyGen 測試模式）', '一律用 Wayne，影像大約 1～2 分鐘後結束'];
+    } else {
+      const none = custs.filter((c) => !c.face);
+      // 一組可能有好幾位客戶：只寫第一位的名字，整串名字下面的清單看得到
+      const who = (c) => (String(c.name).includes('、') ? `${String(c.name).split('、')[0]}那一組` : c.name);
+      face = ['真人臉（HeyGen）', !none.length ? '每一組客戶都挑好臉孔了'
+        : none.length === custs.length ? '還沒幫客戶挑臉孔，通話時只有聲音'
+          : `還沒挑臉孔、只有聲音的：${none.map(who).join('、')}`];
+    }
+  } else if (a?.enabled) {
+    face = ['只有聲音', live ? '真人模式開著，但還不能用' : '真人模式開著，但要開即時通話才會出現'];
+  }
+  rows.push(['客戶的臉', ...face]);
+  const tts = t?.providers?.find((p) => p.id === t.provider);
+  rows.push(['客戶的聲音', live ? 'Gemini Live 內建聲音' : tts?.label || '—',
+    live ? '照每位客戶的性別和年齡自動挑，也可以在下面指定'
+      : tts?.id === 'browser' ? '免費，但聽起來像在念稿' : '可以在下面幫每一組客戶挑']);
+  const rest = (Array.isArray(s.chain) ? s.chain : []).filter((id) => id !== state.active);
+  rows.push(['教練和評分', shortLabel(s.label) || '—', [
+    s.ready ? '' : s.message || '還沒就緒',
+    rest.length ? `不能用時改用 ${rest.map(brainName).join('、')}` : '',
+  ].filter(Boolean).join('；')]);
+  const html = `<h2>現在一通電話是這樣</h2><dl>${rows.map(([k, v, note]) =>
+    `<dt>${esc(k)}</dt><dd><b>${esc(v)}</b>${note ? `<span>${esc(tidy(note))}</span>` : ''}</dd>`).join('')}</dl>`;
+  if (html === setupNowSig) return; // 沒變就不重畫（這一塊會念給螢幕閱讀器聽）
+  setupNowSig = html;
+  $('#setupNow').innerHTML = html;
+}
+
+// ------------------------------------------------------------------ 系統設定頁：教練和評分用的 AI（文字大腦）、ChatGPT 方案、即時通話
 
 const Brain = (() => {
   let cardSig = '';
@@ -463,7 +557,7 @@ const Brain = (() => {
         head = inUse ? tag('使用 ChatGPT 方案', 'green') : tag('已登入');
         body = email + (inUse
           ? `<p class="muted">一般通話的客戶、教練和評分都用你的 ChatGPT 方案；不能用時自動改用 ${fb}。</p>`
-          : '<p class="muted">已登入，但上面的文字大腦沒有選 ChatGPT。</p>')
+          : '<p class="muted">已登入，但上面「教練和評分用的 AI」沒有選 ChatGPT。</p>')
           + (synced ? '<p class="muted">憑證加密存在雲端資料庫，由雲端自己續期。</p>' : '');
         acts = usageLink(false)
           + (!inUse && state.canAdmin ? '<button class="pill" type="button" data-act="use">改用 ChatGPT</button>' : '')
@@ -496,11 +590,13 @@ const Brain = (() => {
     try {
       const d = await api('/api/chatgpt/models');
       models = Array.isArray(d.models) ? d.models.filter((m) => m && m.slug) : [];
-      $('#cgModelNote').textContent = models.length ? '「自動」用清單的第一個。' : '這個帳號沒有可用的模型。';
+      $('#cgModelNote').textContent = models.length ? '「自動」用清單的第一個。' : '這個帳號目前拿不到模型清單，只能用「自動」。';
     } catch (err) {
       models = []; // 定時更新狀態時不重抓，下次進這一頁再試
       $('#cgModelNote').textContent = `讀不到模型清單：${err.message}`;
     }
+    // 沒有清單時兩個選單都只剩「自動」：收起來，只留一行說明
+    $('#cgModels').classList.toggle('no-list', !models.length);
     fillModels(state.status?.chatgpt || c);
   }
 
@@ -559,11 +655,11 @@ const Brain = (() => {
     if (!liveBusy) sw.checked = s.live_enabled;
     // 不能用但還開著（例如金鑰被拿掉）：還是讓人關掉
     sw.disabled = liveBusy || !state.canAdmin || (!avail && !s.live_enabled);
-    let desc = '關閉時，客戶用文字大腦回話再念出來；講完停一下才會送出。';
+    let desc = '關閉時是一般模式：客戶用下面「教練和評分用的 AI」回話再念出來；講完停一下才會送出。';
     if (!avail) desc = s.live_reason || '要先設定 Gemini 金鑰才能開。';
-    else if (s.live_enabled) desc = '通話用 Gemini Live：可以直接插話，客戶會停下來聽。教練和評分仍用上面的文字大腦。';
-    if (s.live_enabled && s.avatar?.enabled) desc += '真人模式已開（在「聲音設定」調整）。';
+    else if (s.live_enabled) desc = '客戶由 Gemini Live 即時回話：可以直接插話，客戶會停下來聽。連不上時自動退回一般模式。';
     $('#liveDesc').textContent = desc;
+    infoMust('liveDesc', !avail); // 說明收在 ⓘ 裡；不能開的原因不用點就看得到
   }
 
   function notices(s) {
@@ -597,6 +693,10 @@ const Brain = (() => {
     }
     sel.disabled = !state.canAdmin;
     $('#brainMsg').textContent = s.message || '';
+    // 這個選單管什麼：即時通話開著時客戶是 Gemini Live 在演，這裡只管教練和評分（以前標題寫「選誰來扮演客戶」，其實不是）
+    $('#brainRole').textContent = s.live
+      ? '即時通話時，客戶由 Gemini Live 扮演；這裡選的 AI 負責即時教練、最後評分和「用 AI 幫我寫」。即時通話連不上、退回一般模式時，客戶也由它扮演。'
+      : '現在是一般模式：扮演客戶、即時教練、最後評分和「用 AI 幫我寫」都用這裡選的 AI。';
     // 備援：主要大腦不能用時依序改用
     const rest = (Array.isArray(s.chain) ? s.chain : []).filter((id) => id !== state.active);
     $('#brainChain').textContent = [
@@ -607,6 +707,7 @@ const Brain = (() => {
     chatgpt(s, enter);
     live(s);
     auth(s);
+    renderSetupNow();
   }
 
   async function saveModel(field, value) {
@@ -705,7 +806,8 @@ const Brain = (() => {
       toast(on ? '已開啟即時通話，下一通電話開始' : '已關閉即時通話', 'info', 2500);
       liveBusy = false;
       if (Array.isArray(s?.providers)) applyStatus(s);
-      else refreshStatus();
+      else await refreshStatus();
+      renderVoices(); // 同一頁下面的真人模式、聲音的說明，都看即時通話開或關
     } catch (err) {
       liveBusy = false;
       sw.checked = !on;
@@ -779,7 +881,7 @@ const CG_REASON = {
   sync_key: '同步密碼不對：要和 Vercel 上的 CHATGPT_SYNC_KEY 一樣',
   rate_limited: '試太多次了，請 10 分鐘後再試',
   redirect: '雲端網址被轉址了：請貼瀏覽器網址列最後顯示的網址',
-  cloud: '雲端沒有收下憑證，請看「AI 大腦」裡的說明',
+  cloud: '雲端沒有收下憑證，請看「管理 → 系統設定」裡的說明',
   cloud_not_app: '這個網址不是對練教練的雲端版',
   cloud_unreachable: '連不到雲端網站',
   cloud_blocked: '雲端擋住了：請用正式網址（https://專案名.vercel.app），或關掉 Deployment Protection',
@@ -806,7 +908,7 @@ function signInReturn() {
   const rest = q.toString();
   history.replaceState(null, '', location.pathname + (rest ? `?${rest}` : '') + location.hash);
   const why = code ? CG_REASON[code] || `代碼：${code}` : '請再試一次';
-  go('brain');
+  go('settings');
   if (result === 'ok') {
     if (!showCgWelcome()) toast('之後由你的 ChatGPT 方案回答。', 'info', 4000, '已登入 ChatGPT');
   } else if (result === 'no_plan') {
@@ -993,6 +1095,14 @@ function keySteps(t, pid) {
 }
 
 let preview = null;
+let ttsBoxLive = null; // 上一次畫的時候即時通話開著嗎（還沒畫過是 null）
+
+// 聲音和臉孔跟著頭像走：同一個頭像的客戶共用一組設定（名字一起列出來），所以不寫其中一個人的年齡
+function groupMeta(c, what) {
+  const n = String(c.name || '').split('、').filter(Boolean).length;
+  const gender = c.gender === 'male' ? '男' : '女';
+  return n > 1 ? `${gender} · ${n} 位客戶共用${what}` : `${gender} · ${esc(c.age)} 歲`;
+}
 
 function stopPreview() {
   if (preview) { preview.pause(); preview = null; }
@@ -1042,8 +1152,14 @@ async function renderVoices() {
     return;
   }
   const current = t.providers.find((p) => p.id === t.provider);
-  $('#ttsBadge').textContent = `目前使用：${current.label}`;
+  $('#ttsBadge').textContent = current.label;
   $('#ttsBadge').className = `tag ${t.provider === 'browser' ? '' : 'green'}`;
+  // 語音服務只有一般模式用得到，即時通話的聲音是 Gemini Live 自己的：寫清楚，不然換了聲音、打電話卻沒變
+  $('#ttsHint').textContent = state.live ? '即時通話用不到，退回一般模式時才會用' : '一般模式的客戶聲音由它合成';
+  $('#voiceNote').textContent = !state.live ? '一般模式：客戶的聲音由下面的語音服務合成，可以幫每一組客戶挑。'
+    : t.provider === 'gemini'
+      ? '即時通話時，客戶用 Gemini Live 的內建聲音：照性別和年齡自動挑；在「更換 → Google 內建」選一個，那一組就固定用它。自己設計的聲音只有一般模式用得到，「試聽」聽到的也是一般模式的聲音。'
+      : `即時通話時，客戶用 Gemini Live 的內建聲音（照性別和年齡自動挑）。下面是${current.label}的聲音，只有退回一般模式時用得到。`;
   $('#ttsProviders').innerHTML = t.providers.map((p) => {
     const info = TTS_INFO[p.id];
     let status = '<span class="tag">未設定</span>';
@@ -1059,6 +1175,11 @@ async function renderVoices() {
   const selected = t.providers.find((p) => p.id === t.selected) || current;
   const needKey = selected.id !== 'browser' && !selected.configured;
   $('#keyBox').classList.toggle('hidden', !needKey);
+  // 語音服務那一塊平常收著。第一次畫時是一般模式、即時通話剛被關掉（接下來的聲音都由它合成）、
+  // 或選的服務還缺金鑰，就打開；其他時候照使用者自己開或關
+  if (ttsBoxLive === null || (ttsBoxLive && !state.live)) $('#ttsBox').open = !state.live;
+  ttsBoxLive = state.live;
+  if (needKey) $('#ttsBox').open = true;
   if (needKey) {
     const env = keyFromEnv(t, selected.id);
     $('#keySteps').innerHTML = keySteps(t, selected.id).map((s) => `<li>${s}</li>`).join('');
@@ -1078,7 +1199,7 @@ async function renderVoices() {
     <div class="voice-card" data-avatar="${esc(c.avatar)}">
       <div class="vc-head">
         <div class="vc-avatar">${avatarSVG(c.avatar)}</div>
-        <div class="vc-who"><b>${esc(c.name)}</b><span>${c.gender === 'male' ? '男' : '女'} · ${esc(c.age)} 歲</span></div>
+        <div class="vc-who"><b>${esc(c.name)}</b><span>${groupMeta(c, '同一個聲音')}</span></div>
         <div class="vc-current"><span>目前聲音</span><b>${esc(serverMode ? (c.voice?.name || autoVoice) : '瀏覽器內建')}</b></div>
         <button class="pill" type="button" data-act="test">${icon('play')}試聽</button>
         ${serverMode ? `<button class="pill ghost" type="button" data-act="pick">更換${icon('chevronDown')}</button>` : ''}
@@ -1101,6 +1222,7 @@ async function renderVoices() {
     card.querySelector('[data-act="pick"]')?.addEventListener('click', () => togglePicker(card, c));
   });
   Faces.render(t);
+  renderSetupNow();
 }
 
 function voiceRow(v, c) {
@@ -1242,6 +1364,7 @@ const Faces = (() => {
     $('#faceDesc').textContent = !a.available ? a.reason
       : a.enabled ? `即時通話時，客戶用真人影像出現，嘴型跟著聲音動${self ? '、表情跟著信任度變' : ''}；連不上就自動改回語音。`
         : `打開後，即時通話的客戶會用${self ? '自架' : ' HeyGen '}的真人影像出現。一般通話不會用到。`;
+    infoMust('faceInfo', !a.available); // 說明和注意事項收在 ⓘ 裡；不能開的原因不用點就看得到
     if (self) {
       renderSelfhost(t, a);
       return;
@@ -1281,7 +1404,7 @@ const Faces = (() => {
       return `<div class="voice-card" data-avatar="${esc(c.avatar)}">
         <div class="vc-head">
           <div class="vc-avatar">${avatarSVG(c.avatar)}</div>
-          <div class="vc-who"><b>${esc(c.name)}</b><span>${c.gender === 'male' ? '男' : '女'} · ${esc(c.age)} 歲</span></div>
+          <div class="vc-who"><b>${esc(c.name)}</b><span>${groupMeta(c, '同一張臉')}</span></div>
           <div class="vc-current face-current">${thumb}<div><span>真人臉孔</span><b class="${f || a.sandbox ? '' : 'warn-text'}">${esc(label)}</b></div></div>
           <button class="pill ghost" type="button" data-act="pick">更換${icon('chevronDown')}</button>
         </div>
@@ -1318,7 +1441,7 @@ const Faces = (() => {
       return `<div class="voice-card" data-avatar="${esc(c.avatar)}">
         <div class="vc-head">
           <div class="vc-avatar">${avatarSVG(c.avatar)}</div>
-          <div class="vc-who"><b>${esc(c.name)}</b><span>${c.gender === 'male' ? '男' : '女'} · ${esc(c.age)} 歲</span></div>
+          <div class="vc-who"><b>${esc(c.name)}</b><span>${groupMeta(c, '同一張臉')}</span></div>
           <div class="vc-current face-current"><div><span>真人臉孔</span><b class="${ok ? '' : 'muted'}">${ok ? '自架臉孔' : '還沒有，用語音'}</b></div></div>
         </div>
       </div>`;
@@ -4484,7 +4607,7 @@ function startNormalCall() {
   const s = state.scenario;
   state.ttsBroken = false;
   Speech.use(state.tts && state.tts.provider !== 'browser' ? 'server' : 'browser');
-  if (!Speech.configure(s.customer)) toast('找不到台灣中文語音，建議改用 Edge 開啟，或到「聲音設定」換成付費語音。', 'warn', 6000);
+  if (!Speech.configure(s.customer)) toast('找不到台灣中文語音，建議改用 Edge 開啟，或到「管理 → 系統設定」換成付費的語音服務。', 'warn', 6000);
   showVoiceName();
 
   const last = state.messages[state.messages.length - 1];
@@ -5003,7 +5126,18 @@ function renderReport(r, ctx) {
 // ------------------------------------------------------------------ 事件
 
 $$('.nav-item').forEach((b) => b.addEventListener('click', () => go(b.dataset.nav)));
-$('#btnNew').addEventListener('click', () => go('home'));
+AdminNav.init();
+
+// 說明文字收在標題旁的 ⓘ 裡：點一下展開、再點收起（手機沒有滑鼠停留，所以用點的）。
+// 有狀況要處理時（data-must，見 infoMust）一定顯示，點 ⓘ 也收不起來
+document.addEventListener('click', (e) => {
+  const b = e.target.closest('.info-btn');
+  const pop = b && document.getElementById(b.getAttribute('aria-controls'));
+  if (!pop) return;
+  const open = b.getAttribute('aria-expanded') !== 'true';
+  b.setAttribute('aria-expanded', String(open));
+  pop.hidden = !(open || pop.dataset.must === '1');
+});
 
 function applyThemeIcon() {
   const dark = document.documentElement.dataset.theme !== 'light';

@@ -284,7 +284,7 @@ class Gemini:
         except TTSError as e:
             detail = e.detail.lower()
             if "api key" in detail or "api_key" in detail:
-                raise TTSError("Gemini 金鑰不對，請到「聲音設定」重新貼一次", 401, e.detail) from None
+                raise TTSError("Gemini 金鑰不對，請到「系統設定」的語音服務重新貼一次", 401, e.detail) from None
             if e.code == 429:
                 raise TTSError(_gemini_quota_message(e.detail), 429, e.detail) from None
             m = re.search(r'"message":\s*"((?:[^"\\]|\\.)*)"', e.detail)

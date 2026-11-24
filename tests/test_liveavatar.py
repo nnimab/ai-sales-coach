@@ -171,7 +171,7 @@ class _Http(unittest.TestCase):
 
 
 class HttpLocalTests(_Http):
-    """本機：在「聲音設定」貼金鑰、開關、挑臉孔、開和關工作階段。"""
+    """本機：在「系統設定」貼金鑰、開關、挑臉孔、開和關工作階段。"""
 
     @classmethod
     def setUpClass(cls):

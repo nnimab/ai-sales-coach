@@ -38,7 +38,7 @@
 
   // 不用登入就能練習的網站（AUTH_MODE=open）：這頁只給管理者改設定用
   function adminOnly() {
-    document.title = '管理者 · AI 對練教練';
+    document.title = '管理者 · AI 業務擂台';
     $('#loginSub').textContent = '練習不用登入，這裡的通行碼只用來改設定。';
     $('#codeLabel').textContent = '管理者通行碼';
     $('#loginFoot').innerHTML = '<a href="/">不用登入，直接去練習</a>';

@@ -1,4 +1,4 @@
-# AI 理專對練教練（Demo）
+# AI 業務擂台（Demo，原名 AI 理專對練教練）
 
 ## 怎麼用
 1. 雙擊 `start.bat`，會自動用 Edge 打開

@@ -1,6 +1,6 @@
 @echo off
 chcp 65001 >nul
-title AI 理專對練教練
+title AI 業務擂台
 cd /d "%~dp0"
 
 where python >nul 2>nul

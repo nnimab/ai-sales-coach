@@ -1,6 +1,6 @@
 """「新增情境」三步驟（web/arena.js）和情境裡的劇本（playbook）：
 1. 網頁的純邏輯：node 跑 tests/js/arena_test.js（沒裝 node 就略過）。
-2. 三種人設 × 三種商品 × 三種刁難度轉出來的 27 個情境，真的送去伺服器存（雲端 app.py、假的 Gemini），每一個都要收得下。
+2. 三種人設 × 四種商品（FCN、海外債、基金、自訂）× 三種刁難度轉出來的 36 個情境，真的送去伺服器存（雲端 app.py、假的 Gemini），每一個都要收得下。
 3. 劇本跟著情境存、清單和編輯畫面拿得到；沒送就沿用、送 null 就拿掉；太大或格式不對會被擋；隱藏設定照樣不外洩。
 全部只連 127.0.0.1，不會用到任何真的金鑰。"""
 
@@ -31,7 +31,7 @@ class JsTests(unittest.TestCase):
         r = node("tests/js/arena_test.js")
         out = (r.stdout + r.stderr).decode("utf-8", "replace")
         self.assertEqual(r.returncode, 0, out)
-        self.assertIn("all 7 ok", out)
+        self.assertRegex(out, "all [0-9]+ ok")
 
 
 @unittest.skipUnless(NODE, "沒有安裝 node")
@@ -86,13 +86,13 @@ class SaveTests(unittest.TestCase):
         return st, js, data
 
     def test_1_all_combinations_save(self):
-        self.assertEqual(len(self.scenarios), 27)
+        self.assertEqual(len(self.scenarios), 36)
         ids = []
         for sc in self.scenarios:
             st, js, data = self.post("/api/editor/save", {"scenario": sc})
             self.assertEqual(st, 200, f"{sc['title']}：{data[:300].decode('utf-8', 'replace')}")
             ids.append(js["id"])
-        self.assertEqual(len(set(ids)), 27)
+        self.assertEqual(len(set(ids)), 36)
         type(self).ids = ids
 
         # 編輯畫面：劇本原樣拿得回來；隱藏設定只有字數

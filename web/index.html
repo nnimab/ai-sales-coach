@@ -18,23 +18,22 @@
       <span class="logo" aria-hidden="true"><svg viewBox="0 0 32 32"><path d="M9 21c0-3.9 3.1-7 7-7s7 3.1 7 7" stroke="currentColor" stroke-width="2.6" fill="none" stroke-linecap="round"/><circle cx="16" cy="10" r="3" fill="currentColor"/></svg></span>
       <span>對練教練</span>
     </div>
-    <button class="sb-item" id="btnNew" type="button"><span data-icon="edit"></span>新對練</button>
     <nav class="sb-nav">
       <button class="sb-item nav-item active" data-nav="home" type="button"><span data-icon="grid"></span>對練情境</button>
       <button class="sb-item nav-item" data-nav="history" type="button"><span data-icon="history"></span>練習紀錄<span class="nav-count" id="historyCount"></span></button>
-      <button class="sb-item nav-item" data-nav="scenarios" type="button"><span data-icon="list"></span>情境設定</button>
       <button class="sb-item nav-item" data-nav="rep" type="button"><span data-icon="user"></span>我的背景</button>
-      <button class="sb-item nav-item" data-nav="voices" type="button"><span data-icon="volume"></span>聲音設定</button>
-      <button class="sb-item nav-item" data-nav="brain" type="button"><span data-icon="cpu"></span>AI 大腦</button>
+      <!-- 管理：出題和系統設定。業務每天只用得到上面三個，這一組平常收著 -->
+      <button class="sb-item nav-group" id="btnAdmin" type="button" aria-expanded="false" aria-controls="adminNav"><span data-icon="sliders"></span>管理<span class="chev"><span data-icon="chevronDown"></span></span></button>
+      <div class="sb-sub" id="adminNav" hidden>
+        <button class="sb-item nav-item" data-nav="scenarios" type="button"><span data-icon="list"></span>情境設定</button>
+        <button class="sb-item nav-item" data-nav="settings" type="button"><span data-icon="cpu"></span>系統設定</button>
+      </div>
     </nav>
     <div class="sb-section">最近練習</div>
     <div class="sb-recent" id="recentList"></div>
+    <!-- AI 大腦連不上時才出現；要換大腦到「管理 → AI 大腦」 -->
+    <div class="provider" id="provider" role="status"><span class="dot"></span><span class="provider-msg" id="providerMsg">連線中…</span></div>
     <div class="sb-foot">
-      <div class="provider" id="provider" title="AI 大腦">
-        <span class="dot"></span>
-        <select id="providerSelect" aria-label="切換 AI 大腦"></select>
-      </div>
-      <div class="provider-msg" id="providerMsg">連線中…</div>
       <div class="sb-row">
         <button class="icon-btn" id="btnTheme" type="button" title="切換深色／淺色"><span data-icon="moon"></span></button>
         <span class="sb-note">示範版本 · 內容待主管與法遵確認</span>
@@ -65,37 +64,34 @@
       </div>
     </section>
 
-    <!-- 聲音設定 -->
-    <section id="view-voices" class="view">
+    <!-- 系統設定：以前的「聲音設定」和「AI 大腦」合成一頁，照一通電話的順序排
+         （怎麼通話 → 客戶的臉 → 客戶的聲音 → 教練和評分用的 AI）。元素的 id 都沒變，只是換了位置 -->
+    <section id="view-settings" class="view">
       <div class="page">
         <div class="page-head">
-          <h1>聲音設定</h1>
-          <span class="tag" id="ttsBadge"></span>
+          <h1>系統設定</h1>
         </div>
-        <p class="page-sub">選一個語音服務，再幫每位客戶挑聲音。付費服務會比瀏覽器內建自然很多。</p>
-        <h2 class="sec-title">語音服務</h2>
-        <div class="svc-grid" id="ttsProviders"></div>
-        <div class="key-box hidden" id="keyBox">
-          <ol class="key-steps" id="keySteps"></ol>
-          <div class="key-row" id="keyRow">
-            <input id="keyInput" type="password" autocomplete="off" spellcheck="false" placeholder="貼上 API 金鑰">
-            <button class="pill primary" id="btnSaveKey" type="button">儲存</button>
-          </div>
-          <p class="muted" id="keyNote">金鑰只會存在這台電腦的 .env 檔案裡，不會上傳到別的地方。</p>
-        </div>
-        <div class="model-row hidden" id="modelRow">
-          <span>語音模型</span>
-          <select id="ttsModel" class="select"></select>
-          <span class="muted" id="modelNote"></span>
-        </div>
-        <h2 class="sec-title">客戶的聲音</h2>
-        <div class="voice-customers" id="voiceCustomers"></div>
+        <p class="page-sub">一通電話怎麼進行、客戶長什麼樣子、用哪個 AI，都在這一頁。設定好之後平常不用動。</p>
+        <div id="brainNotices"></div>
 
-        <!-- 真人模式：即時通話時客戶用真人影像出現（HeyGen LiveAvatar；有自架引擎的伺服器可以切換成自架） -->
-        <div id="faceSection" class="hidden">
-          <h2 class="sec-title">真人模式</h2>
+        <!-- 現在的設定加起來，一通電話會是什麼樣子（以前要看兩頁、四個開關才拼得出來） -->
+        <div class="setup-now" id="setupNow" aria-live="polite"></div>
+
+        <!-- 1. 通話方式 -->
+        <div id="liveSection" class="hidden">
+          <h2 class="sec-title">通話方式</h2>
           <div class="brain-card setting-row">
-            <div class="setting-main"><b id="faceTitle">真人模式（HeyGen LiveAvatar）</b><p class="muted" id="faceDesc"></p></div>
+            <div class="setting-main"><b>即時通話（Gemini Live）</b><button class="info-btn" type="button" aria-expanded="false" aria-controls="liveDesc" aria-label="說明：即時通話"><span data-icon="info"></span></button><p class="muted" id="liveDesc" hidden></p></div>
+            <label class="switch lg"><input type="checkbox" id="liveSwitch" aria-label="即時通話（Gemini Live）"><span class="knob"></span></label>
+          </div>
+        </div>
+
+        <!-- 2. 客戶的臉：真人模式（HeyGen LiveAvatar；有自架引擎的伺服器可以切換成自架） -->
+        <div id="faceSection" class="hidden">
+          <h2 class="sec-title">客戶的臉</h2>
+          <div class="brain-card setting-row">
+            <div class="setting-main"><b id="faceTitle">真人模式（HeyGen LiveAvatar）</b><button class="info-btn" type="button" aria-expanded="false" aria-controls="faceInfo" aria-label="說明：真人模式"><span data-icon="info"></span></button>
+              <div id="faceInfo" hidden><p class="muted" id="faceDesc"></p><p class="muted face-note" id="faceNote"></p></div></div>
             <label class="switch lg"><input type="checkbox" id="faceSwitch" aria-label="真人模式"><span class="knob"></span></label>
           </div>
           <div class="face-provider hidden" id="faceProviderRow">
@@ -111,31 +107,43 @@
             <p class="muted" id="faceKeyNote"></p>
           </div>
           <p class="notice hidden" id="faceSandbox">測試模式：不扣點數，但只能用 Wayne，影像大約 1～2 分鐘後結束。</p>
-          <p class="muted face-note" id="faceNote"></p>
           <div class="voice-customers" id="faceCustomers"></div>
         </div>
-      </div>
-    </section>
 
-    <!-- AI 大腦 -->
-    <section id="view-brain" class="view">
-      <div class="page">
-        <div class="page-head">
-          <h1>AI 大腦</h1>
-          <span class="tag" id="brainBadge"></span>
-        </div>
-        <p class="page-sub">選誰來扮演客戶、當教練和評分。即時通話另外開關。</p>
-        <div id="brainNotices"></div>
+        <!-- 3. 客戶的聲音 -->
+        <h2 class="sec-title">客戶的聲音<button class="info-btn" type="button" aria-expanded="false" aria-controls="voiceNote" aria-label="說明：通話時用的是哪個聲音"><span data-icon="info"></span></button></h2>
+        <p class="info-pop" id="voiceNote" hidden></p>
+        <div class="voice-customers" id="voiceCustomers"></div>
+        <!-- 語音服務（一般模式用哪一家合成聲音）：即時通話用不到，平常收著 -->
+        <details class="fold" id="ttsBox">
+          <summary><b>語音服務</b><span class="tag" id="ttsBadge"></span><span class="fold-hint" id="ttsHint"></span></summary>
+          <p class="muted">一般模式的客戶聲音由這裡選的服務合成，上面每位客戶可以挑的聲音也跟著它換。付費服務會比瀏覽器內建自然很多。</p>
+          <div class="svc-grid" id="ttsProviders"></div>
+          <div class="key-box hidden" id="keyBox">
+            <ol class="key-steps" id="keySteps"></ol>
+            <div class="key-row" id="keyRow">
+              <input id="keyInput" type="password" autocomplete="off" spellcheck="false" placeholder="貼上 API 金鑰">
+              <button class="pill primary" id="btnSaveKey" type="button">儲存</button>
+            </div>
+            <p class="muted" id="keyNote">金鑰只會存在這台電腦的 .env 檔案裡，不會上傳到別的地方。</p>
+          </div>
+          <div class="model-row hidden" id="modelRow">
+            <span>語音模型</span>
+            <select id="ttsModel" class="select"></select>
+            <span class="muted" id="modelNote"></span>
+          </div>
+        </details>
 
-        <h2 class="sec-title">文字大腦</h2>
+        <!-- 4. 教練和評分用的 AI（文字大腦） -->
+        <h2 class="sec-title">教練和評分用的 AI<span class="tag" id="brainBadge"></span><button class="info-btn" type="button" aria-expanded="false" aria-controls="brainRole" aria-label="說明：這個 AI 負責什麼"><span data-icon="info"></span></button></h2>
+        <p class="info-pop" id="brainRole" hidden></p>
         <div class="brain-row">
-          <select id="brainSelect" class="select" aria-label="文字大腦"></select>
+          <select id="brainSelect" class="select" aria-label="教練和評分用的 AI"></select>
           <span class="muted" id="brainMsg"></span>
         </div>
         <p class="muted brain-note" id="brainChain"></p>
 
         <div id="cgSection" class="hidden">
-          <h2 class="sec-title">ChatGPT 方案</h2>
           <!-- 卡片內容依登入狀態重畫；模型和雲端欄位不重畫，打到一半不會被洗掉 -->
           <div class="brain-card" id="cgCard"></div>
           <div class="brain-card cg-models hidden" id="cgModels">
@@ -156,14 +164,6 @@
             </div>
             <p class="muted" id="cgCloudInfo"></p>
           </details>
-        </div>
-
-        <div id="liveSection" class="hidden">
-          <h2 class="sec-title">即時通話</h2>
-          <div class="brain-card setting-row">
-            <div class="setting-main"><b>即時通話（Gemini Live）</b><p class="muted" id="liveDesc"></p></div>
-            <label class="switch lg"><input type="checkbox" id="liveSwitch" aria-label="即時通話（Gemini Live）"><span class="knob"></span></label>
-          </div>
         </div>
 
         <div id="authSection" class="hidden">

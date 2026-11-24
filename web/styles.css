@@ -93,6 +93,14 @@ button { font: inherit; color: inherit; }
 .sb-item.active { background: var(--panel-2); }
 .sb-item .ic { color: var(--text-2); }
 .sb-nav { display: flex; flex-direction: column; gap: 2px; margin-top: 2px; }
+/* 管理（情境設定、聲音設定、AI 大腦）：平常收著，點一下展開 */
+.nav-group .chev { display: inline-flex; margin-left: auto; color: var(--text-3); transition: transform 0.15s; }
+.nav-group .chev .ic { width: 16px; height: 16px; color: inherit; }
+.nav-group[aria-expanded="true"] .chev { transform: rotate(180deg); }
+.nav-group.has-active[aria-expanded="false"] { background: var(--panel-2); } /* 收起來時，看得出現在在裡面的頁面 */
+.sb-sub { display: flex; flex-direction: column; gap: 2px; }
+.sb-sub[hidden] { display: none; }
+.sb-sub .sb-item { padding-left: 22px; }
 .nav-count { margin-left: auto; font-size: 12px; color: var(--text-3); }
 .sb-section { padding: 20px 10px 6px; font-size: 12px; font-weight: 500; color: var(--text-3); }
 .sb-recent { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 1px; overflow-y: auto; }
@@ -105,15 +113,11 @@ button { font: inherit; color: inherit; }
 .recent-item b { font-size: 12px; font-weight: 600; color: var(--text-3); font-variant-numeric: tabular-nums; }
 .recent-empty { padding: 2px 10px; font-size: 13px; color: var(--text-3); }
 .sb-foot { display: flex; flex-direction: column; gap: 6px; padding: 10px 2px 2px; }
-.provider { display: flex; align-items: center; gap: 8px; height: 38px; padding: 0 12px; border-radius: 12px; background: var(--panel); }
-.provider select { flex: 1; min-width: 0; border: none; outline: none; background: none; color: var(--text); font: inherit; font-size: 13px; cursor: pointer; }
-.provider select option { background: var(--panel); color: var(--text); }
-/* 焦點框畫在外框上，跟其他按鈕一樣 */
-.provider:has(select:focus-visible) { outline: 2px solid var(--text); outline-offset: 2px; }
-.dot { width: 8px; height: 8px; flex: none; border-radius: 50%; background: var(--amber); }
-.provider.ready .dot { background: var(--green); }
-.provider.down .dot { background: var(--red); }
-.provider-msg { padding: 0 12px; font-size: 12px; color: var(--text-3); }
+/* AI 大腦連不上時才出現的一行，平常不佔位置（要換大腦到「管理 → AI 大腦」） */
+.provider { display: none; align-items: flex-start; gap: 8px; margin: 8px 2px 0; padding: 8px 12px; border-radius: 12px; background: var(--red-bg); }
+.provider.down { display: flex; }
+.dot { width: 8px; height: 8px; flex: none; margin-top: 5px; border-radius: 50%; background: var(--red); }
+.provider-msg { font-size: 12px; line-height: 1.5; color: var(--text-2); }
 .sb-row { display: flex; align-items: center; gap: 8px; padding: 2px 2px 0; }
 .sb-note { font-size: 11.5px; line-height: 1.4; color: var(--text-3); }
 .icon-btn {
@@ -130,6 +134,31 @@ button { font: inherit; color: inherit; }
 .page-head h1 { margin: 0; font-size: 28px; font-weight: 600; letter-spacing: -0.02em; }
 .page-sub { margin: 6px 0 12px; color: var(--text-2); }
 .sec-title { margin: 40px 0 14px; font-size: 16px; font-weight: 600; }
+.sec-title .tag { margin-left: 10px; vertical-align: middle; }
+/* 說明文字收在標題旁的 ⓘ 裡：點一下才展開，平常不佔版面 */
+.info-btn { display: inline-grid; place-items: center; width: 26px; height: 26px; margin-left: 4px; padding: 0; border: none; border-radius: 50%; background: none; color: var(--text-3); vertical-align: middle; cursor: pointer; }
+.info-btn:hover, .info-btn[aria-expanded="true"] { background: var(--hover); color: var(--text); }
+.info-btn .ic { width: 16px; height: 16px; }
+.info-pop { margin: -4px 0 14px; padding: 12px 14px; border-radius: 12px; background: var(--panel); font-size: 13px; line-height: 1.7; color: var(--text-2); }
+/* 系統設定頁最上面：現在的設定加起來，一通電話會是什麼樣子 */
+.setup-now { margin-top: 20px; padding: 18px 20px; border-radius: 18px; background: var(--panel); }
+.setup-now:empty { display: none; }
+.setup-now h2 { margin: 0 0 12px; font-size: 15px; font-weight: 600; }
+.setup-now dl { display: grid; grid-template-columns: 88px minmax(0, 1fr); gap: 10px 16px; margin: 0; font-size: 14px; line-height: 1.6; }
+.setup-now dt { color: var(--text-3); }
+.setup-now dd { margin: 0; }
+.setup-now dd b { font-weight: 600; }
+.setup-now dd span { display: block; font-size: 13px; color: var(--text-2); }
+/* 平常用不到的設定：收成一行，點開才看得到 */
+.fold { margin-top: 18px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.fold > summary { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; padding: 14px 0; cursor: pointer; list-style: none; }
+.fold > summary::-webkit-details-marker { display: none; }
+.fold > summary::after { content: "›"; margin-left: auto; color: var(--text-3); transition: transform 0.15s; }
+.fold[open] > summary::after { transform: rotate(90deg); }
+.fold > summary b { font-size: 15px; font-weight: 600; }
+.fold-hint { font-size: 13px; color: var(--text-3); }
+.fold > p.muted { margin: 0 0 14px; }
+.fold[open] { padding-bottom: 18px; }
 
 /* ---------- 按鈕、標籤 ---------- */
 .pill {
@@ -288,6 +317,8 @@ a.pill { text-decoration: none; }
 .brain-card { margin-top: 12px; padding: 18px; border-radius: 18px; background: var(--panel); }
 .brain-card p { margin: 8px 0 0; font-size: 14px; line-height: 1.65; color: var(--text-2); }
 .brain-card p.muted { font-size: 13px; color: var(--text-3); }
+/* ⓘ 裡的說明：開關不能開的時候會自己顯示，並用警示色 */
+.brain-card p.info-warn, .brain-card .info-warn p { color: var(--amber); }
 .cg-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .cg-head b { font-size: 15px; font-weight: 600; }
 .brain-card p.cg-who { color: var(--text); font-weight: 500; }
@@ -295,6 +326,7 @@ a.pill { text-decoration: none; }
 .cg-models { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .cg-models p.wide { grid-column: 1 / -1; margin: 0; }
 .cg-models .muted:empty { display: none; }
+.cg-models.no-list .field { display: none; } /* 拿不到模型清單：兩個選單都只剩「自動」，只留說明 */
 .cg-cloud summary { display: flex; align-items: center; gap: 10px; cursor: pointer; list-style: none; }
 .cg-cloud summary::-webkit-details-marker { display: none; }
 .cg-cloud summary::after { content: "›"; margin-left: auto; color: var(--text-3); transition: transform 0.15s; }
@@ -946,7 +978,14 @@ mark.bad { padding: 0 2px; border-radius: 4px; background: var(--mark); color: i
   /* 選單變多了：手機上排成第二行，放不下就左右滑 */
   .sb-nav { order: 3; flex-direction: row; width: 100%; margin: 0; overflow-x: auto; scrollbar-width: none; }
   .sb-nav::-webkit-scrollbar { display: none; }
-  .sb-section, .sb-recent, .provider-msg, .sb-note, #btnNew { display: none; }
+  .sb-section, .sb-recent, .sb-note { display: none; }
+  /* 管理展開後，裡面三項直接接在同一列後面 */
+  .sb-sub { display: contents; }
+  .sb-sub[hidden] { display: none; }
+  .sb-sub .sb-item { padding-left: 10px; }
+  .nav-group .chev { margin-left: 0; transform: rotate(-90deg); }
+  .nav-group[aria-expanded="true"] .chev { transform: rotate(90deg); }
+  .provider { order: 4; width: 100%; margin: 0; }
   .sb-foot { flex-direction: row; margin-left: auto; padding: 0; }
   .main { overflow: visible; }
   .home { padding-top: 48px; }
@@ -965,6 +1004,7 @@ mark.bad { padding: 0 2px; border-radius: 4px; background: var(--mark); color: i
 }
 
 @media (max-width: 480px) {
+  .sb-nav .sb-item > .ic { display: none; } /* 手機：選單只留文字，四個項目一列放得下，不用左右滑就看得到「管理」 */
   .face-current img { display: none; } /* 手機放不下：名字就夠了，挑臉孔時看得到照片 */
 }
 

@@ -85,7 +85,7 @@
 | `ADMIN_PASSCODE` | 想讓別人只能看、不能改設定時，另設一組管理者通行碼。只有你自己用就不用填 |
 | `AUTH_MODE` | 填 `open`：不用登入，打開網址就能用（和 deploy.bat 一樣），這時 `APP_PASSCODE` 不用填 |
 | `ELEVENLABS_API_KEY`、`YATING_API_KEY` | 要用 ElevenLabs 或雅婷的聲音 |
-| `LIVEAVATAR_API_KEY` | 要用真人模式（HeyGen LiveAvatar），金鑰在 https://app.liveavatar.com/developers。加了之後到「聲音設定」打開、幫客戶挑臉 |
+| `LIVEAVATAR_API_KEY` | 要用真人模式（HeyGen LiveAvatar），金鑰在 https://app.liveavatar.com/developers。加了之後到「管理 → 系統設定」打開、幫客戶挑臉 |
 | `LIVEAVATAR_SANDBOX` | 填 `1`：真人模式的測試模式，不扣點數，但只能用 Wayne、大約 1～2 分鐘就結束 |
 | `ALLOWED_HOSTS` | 用自己的網域時填網域，例如 `coach.example.com` |
 
@@ -103,8 +103,8 @@
 ## 第 5 步：測試
 
 1. 打開 `https://你的專案名.vercel.app`，輸入通行碼登入。
-2. 左下角的燈號是綠的。
-3. 左邊「AI 大腦」：上面沒有黃色的警告，文字大腦是 Gemini。
+2. 左下角沒有出現紅色的連線警告（AI 大腦連不上時才會出現）。
+3. 左邊「管理 → 系統設定」：上面沒有黃色的警告，文字大腦是 Gemini。
    - 有黃色警告就照上面寫的補設定，再 Redeploy。
 4. 選一位客戶，試打一通電話。
 5. 確認情境檔不會被直接下載：打開 `https://你的專案名.vercel.app/scenarios/01-dca-volatility.json`，應該跳回登入頁或顯示 not found。
@@ -114,20 +114,20 @@
 
 先確認第 3 步有加 `CHATGPT_SYNC_KEY`、第 4 步有接上資料庫（後來才加的話要 Redeploy）。
 
-1. 在這台電腦執行 `start.bat`，到左邊「AI 大腦」，展開「雲端版（Vercel）」。
+1. 在這台電腦執行 `start.bat`，到左邊「管理 → 系統設定」，展開「雲端版（Vercel）」。
 2. **雲端網址**：貼 `https://你的專案名.vercel.app`。
    - 要用專案的正式網址（Vercel 專案頁 Domains 列出的那個）。不要用每次部署都不一樣、很長的那種網址，那種 Vercel 預設會擋。
 3. **同步密碼**：貼 `CHATGPT_SYNC_KEY` 的值（和 Vercel 上的一模一樣）。
 4. 按「儲存並測試」，看到「連上雲端了」。
 5. 按「登入並同步到雲端」→ 用你自己的 Plus 或 Pro 帳號登入、按同意 → 回到本機畫面，顯示「已同步到雲端」。
-6. 打開雲端版的「AI 大腦」：ChatGPT 卡片會顯示你的 email 和「使用 ChatGPT 方案」，文字大腦自動換成 ChatGPT。
+6. 打開雲端版的「管理 → 系統設定」：ChatGPT 卡片會顯示你的 email 和「使用 ChatGPT 方案」，文字大腦自動換成 ChatGPT。
 
 這是怎麼運作的：本機用「雲端那台的身分」幫雲端登入一次，拿到的憑證馬上用 HTTPS 加密傳給雲端，這台電腦不留那一份；之後雲端自己續期。這是 OpenAI 文件「Self-hosted VMs」寫的做法。本機自己的 ChatGPT 登入是另一份，兩邊互不影響。
 
 之後：
 - 雲端顯示「登入過期」：回本機版再按一次「登入並同步到雲端」（大約 10 秒）。OpenAI 目前可能有續期的問題，有時大約每小時就要重做一次。
 - ChatGPT 用量到上限、登入過期或暫時不能用時，**Gemini 會自動接手**，練習不會中斷。
-- 不想讓雲端再用你的 ChatGPT：雲端版「AI 大腦」→「清除雲端的 ChatGPT 憑證」。
+- 不想讓雲端再用你的 ChatGPT：雲端版「管理 → 系統設定」→「清除雲端的 ChatGPT 憑證」。
 
 ## 真人版（RunPod）的固定網址
 
@@ -162,13 +162,13 @@ RunPod 的 Pod 重建後網址會換。手機一律開 `https://你的專案名.
 | 看到什麼 | 怎麼辦 |
 | --- | --- |
 | 登入頁寫「網站還沒設定好」 | 照清單補環境變數，再 Redeploy |
-| 「AI 大腦」有黃色警告「資料庫還沒接上」 | 做第 4 步 |
+| 「管理 → 系統設定」有黃色警告「資料庫還沒接上」 | 做第 4 步 |
 | 一直跳回登入頁 | 改過 `APP_PASSCODE` 或 `APP_SECRET` 後要重新登入，這是正常的 |
 | 改了 `APP_SECRET` 之後 ChatGPT 變成沒同步 | 雲端的憑證是用它加密的，換了就讀不到：回本機再同步一次 |
 | 同步時說「同步密碼不對」 | 本機和 Vercel 的 `CHATGPT_SYNC_KEY` 要一模一樣；Vercel 改過要 Redeploy |
 | 同步時說「雲端還沒設定 CHATGPT_SYNC_KEY」 | 到 Vercel 加上它，再 Redeploy |
 | 同步時說「雲端擋住了這個請求」 | 確認貼的是正式網址（第 6 步第 2 點）；或到 Settings → Deployment Protection 確認正式網址沒有被擋 |
-| 「聲音設定」不能貼金鑰 | 雲端版的金鑰要加在 Vercel 的環境變數，畫面上會寫要加哪一個名字 |
+| 「管理 → 系統設定」不能貼金鑰 | 雲端版的金鑰要加在 Vercel 的環境變數，畫面上會寫要加哪一個名字 |
 | 客戶回話很慢、常說太忙 | Gemini 免費版尖峰時常塞車，到 AI Studio 開啟付費 |
 
 給技術人員：專案附的 `tools/smoke.py` 可以自動檢查部署，用法是 `python tools/smoke.py https://你的專案名.vercel.app 你的通行碼`；不用登入的網站（`AUTH_MODE=open`）改成 `python tools/smoke.py https://你的專案名.vercel.app --open`。
@@ -190,7 +190,7 @@ RunPod 的 Pod 重建後網址會換。手機一律開 `https://你的專案名.
    - `CHATGPT_CLIENT_ID=`（OpenAI 給的）
    - `CHATGPT_CLIENT_SECRET=`（有給才填）
    - `CHATGPT_REDIRECT_URI=https://你的網域/auth/callback`
-3. Redeploy。之後在雲端版「AI 大腦」直接按「Continue with ChatGPT」登入，不用再從本機同步。
+3. Redeploy。之後在雲端版「管理 → 系統設定」直接按「Continue with ChatGPT」登入，不用再從本機同步。
 
 ## 其他設定（通常不用改）
 

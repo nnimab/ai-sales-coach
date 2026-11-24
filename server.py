@@ -621,7 +621,7 @@ def yating_default(gender):
 
 def voice_brief(cust):
     """給 Gemini 設計聲音用的一兩句描述：年齡、性別、職業，加上台灣腔。
-    只用公開欄位：這段會顯示在「聲音設定」，也會存進 Gemini，不能帶到 server_only 的人設。"""
+    只用公開欄位：這段會顯示在「系統設定」的客戶聲音，也會存進 Gemini，不能帶到 server_only 的人設。"""
     v = cust.get("voice") or {}
     if v.get("brief"):
         return v["brief"]
@@ -708,7 +708,7 @@ def _pick_voice(pid, avatar, cust, gender):
             vid = client.add_shared(row["public_owner_id"], row["voice_id"], f"AI對練-{cust.get('name', avatar)}")
             set_assigned(pid, avatar, vid, row["name"])
             return vid
-    raise tts.TTSError("找不到適合的台灣口音聲音，請到「聲音設定」手動挑選", 409)
+    raise tts.TTSError("找不到適合的台灣口音聲音，請到「系統設定」的客戶聲音手動挑選", 409)
 
 
 def is_opening(text):
@@ -2241,7 +2241,7 @@ def live_vocab(sc):
 
 
 def live_voice(cust):
-    """客戶在「聲音設定」選了 Gemini 內建聲音就用那個，否則依性別和年齡挑。"""
+    """客戶在「系統設定」選了 Gemini 內建聲音就用那個，否則依性別和年齡挑。"""
     a = assigned("gemini", cust.get("avatar"))
     if a and a.get("voice_id") in {n for n, _, _ in tts.GEMINI_VOICES}:
         return a["voice_id"]
@@ -2321,9 +2321,9 @@ def avatar_problem(provider=None):
             if SERVER_MODE:
                 return f"還沒設定 LiveAvatar 金鑰：請在伺服器的環境變數加上 {AVATAR_KEY_NAME} 後重新啟動"
             return f"還沒設定 LiveAvatar 金鑰：請到 Vercel 新增 {AVATAR_KEY_NAME} 後 Redeploy"
-        return "還沒設定 LiveAvatar 金鑰：請在「聲音設定」的真人模式貼上"
+        return "還沒設定 LiveAvatar 金鑰：請在「系統設定」的真人模式貼上"
     if not (live_enabled() and PROVIDERS["gemini"]["configured"]):
-        return "真人模式要配合即時通話（Gemini Live）：請先到「AI 大腦」打開"
+        return "真人模式要配合即時通話（Gemini Live）：請先到「系統設定」打開即時通話"
     if provider == "selfhost":
         h = face_health()
         if not h["ok"]:
@@ -2431,7 +2431,7 @@ def avatar_list():
 def avatar_error_text(e):
     if e.kind == "key":
         where = (f"請檢查伺服器環境變數的 {AVATAR_KEY_NAME}" if SERVER_MODE
-                 else f"請到 Vercel 檢查 {AVATAR_KEY_NAME} 後 Redeploy" if ON_CLOUD else "請到「聲音設定」重新貼一次")
+                 else f"請到 Vercel 檢查 {AVATAR_KEY_NAME} 後 Redeploy" if ON_CLOUD else "請到「系統設定」的真人模式重新貼一次")
         return f"{e}：{where}"
     return str(e)
 
@@ -2469,15 +2469,15 @@ def brain_problem(pid):
             if not acct.get("signed_in"):
                 return "還沒同步：請在本機版按『登入並同步到雲端』"
         if acct.get("needs_login"):
-            return "ChatGPT 要重新登入：請到「AI 大腦」再登入一次"
+            return "ChatGPT 要重新登入：請到「系統設定」再登入一次"
         if not acct.get("signed_in"):
-            return "請先到「AI 大腦」用 ChatGPT 登入"
+            return "請先到「系統設定」用 ChatGPT 登入"
         return "這個帳號沒有允許使用 ChatGPT 方案，請重新登入並允許"
     if PROVIDERS[pid]["configured"]:
         return ""
     if ON_CLOUD:
         return f"請到 Vercel → Settings → Environment Variables 新增 {ENV_HINTS.get(pid, '金鑰')} 後 Redeploy"
-    where = "請先到「聲音設定」選 Gemini 貼上金鑰" if pid == "gemini" else "請編輯 .env 後重新啟動"
+    where = "請先到「系統設定」的語音服務選 Gemini 貼上金鑰" if pid == "gemini" else "請編輯 .env 後重新啟動"
     return f"這個選項還沒設定金鑰，{where}"
 
 
@@ -2608,7 +2608,7 @@ def status():
         "live_available": gemini_ok,
         "live_reason": "" if gemini_ok else (
             "還沒設定 Gemini 金鑰：請到 Vercel 新增 GEMINI_API_KEY 後 Redeploy" if ON_CLOUD
-            else "還沒設定 Gemini 金鑰：請到「聲音設定」選 Gemini 貼上金鑰"),
+            else "還沒設定 Gemini 金鑰：請到「系統設定」的語音服務選 Gemini 貼上金鑰"),
         "avatar": avatar_info(),
         "chatgpt": chatgpt_info(acct),
         "storage": storage_info(),
@@ -3522,7 +3522,7 @@ class Handler(BaseHTTPRequestHandler):
         if not isinstance(enabled, bool):
             return self._json(400, {"error": "資料格式錯誤"})
         if enabled and not PROVIDERS["gemini"]["configured"]:
-            where = "請到 Vercel 新增 GEMINI_API_KEY 後 Redeploy" if ON_CLOUD else "請先到「聲音設定」選 Gemini 貼上金鑰"
+            where = "請到 Vercel 新增 GEMINI_API_KEY 後 Redeploy" if ON_CLOUD else "請先到「系統設定」的語音服務選 Gemini 貼上金鑰"
             return self._json(400, {"error": f"還沒設定 Gemini 金鑰，{where}"})
         set_setting("LIVE_ENABLED", "1" if enabled else "0")
         self._json(200, status())
@@ -3734,10 +3734,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def _live_token(self, body):
         if not PROVIDERS["gemini"]["configured"]:
-            where = "請到 Vercel 新增 GEMINI_API_KEY 後 Redeploy" if ON_CLOUD else "請到「聲音設定」選 Gemini 貼上金鑰"
+            where = "請到 Vercel 新增 GEMINI_API_KEY 後 Redeploy" if ON_CLOUD else "請到「系統設定」的語音服務選 Gemini 貼上金鑰"
             return self._json(400, {"error": f"還沒設定 Gemini 金鑰，{where}"})
         if not live_enabled():
-            return self._json(409, {"error": "即時通話已關閉，請到「AI 大腦」打開"})
+            return self._json(409, {"error": "即時通話已關閉，請到「系統設定」打開"})
         sc = self._scenario(body)
         if sc is None:
             return
@@ -3828,7 +3828,7 @@ class Handler(BaseHTTPRequestHandler):
         if problem:
             return self._json(400, {"error": problem})
         if not avatar_enabled():
-            return self._json(409, {"error": "真人模式已關閉，請到「聲音設定」打開"})
+            return self._json(409, {"error": "真人模式已關閉，請到「系統設定」打開"})
         avatar = str(body.get("avatar") or "")
         cust, _ = customer_for(avatar)
         if not cust:
@@ -3839,7 +3839,7 @@ class Handler(BaseHTTPRequestHandler):
         face = {"id": liveavatar.SANDBOX_AVATAR, "name": liveavatar.SANDBOX_NAME} if sandbox else avatar_faces().get(avatar)
         if not isinstance(face, dict) or not face.get("id"):
             who = cust.get("name") or "這位客戶"
-            return self._json(409, {"error": f"還沒幫{who}挑真人臉孔：請到「聲音設定」的真人模式挑一個"})
+            return self._json(409, {"error": f"還沒幫{who}挑真人臉孔：請到「系統設定」的真人模式挑一個"})
         uid = getattr(CTX, "uid", "") or ""
         if count_try("avstart:" + (uid or self._client_ip()), 600) > AVATAR_STARTS:
             return self._json(429, {"error": "真人模式開太多次了，請 10 分鐘後再試"})

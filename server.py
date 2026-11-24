@@ -1,4 +1,4 @@
-"""AI 理專對練教練：本機 demo 伺服器（只用 Python 標準函式庫，不需安裝套件）。
+"""AI 業務擂台（原名 AI 理專對練教練）：本機 demo 伺服器（只用 Python 標準函式庫，不需安裝套件）。
 同一份程式也能放到 Vercel（app.py 包成 WSGI），雲端模式的資料改存 Upstash Redis；
 也能放在自己的伺服器（APP_MODE=server，例如 RunPod）：跟雲端一樣對外開放，資料存成檔案（DATA_DIR）。"""
 
@@ -1047,6 +1047,7 @@ SERVER_ONLY_KEYS = ("persona", "hidden_info", "reveal_rules", "behavior", "coach
 PUBLIC_KEYS = (
     "id", "title", "product", "difficulty", "difficulty_level", "duration_min", "call_direction",
     "initial_trust", "learner_task", "opening_line", "first_tip", "checklist", "demo_lines", "rubric_type",
+    "playbook",
 )
 FACTS_MAX = 3000  # server_only.product_facts（商品資料）最多幾個字；可以不寫
 
@@ -1208,6 +1209,56 @@ def default_voice(gender, age):
     if age < 35 and gender == "female":
         return 1.08, 1.06
     return 1.0, 1.0
+
+
+PLAYBOOK_MAX = 24000  # 劇本轉成 JSON 最多幾個字
+_PB_KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,31}$")
+
+
+def clean_playbook(value):
+    """「新增情境」三步驟存的劇本（填的商品和人設、大綱、超業範本對話）：之後重開、下載 Word、匯出情境檔都靠它。
+    這是教材，會跟公開欄位一起送到瀏覽器，所以只收單純的資料：字串、數字、布林、清單和物件，
+    限制層數、每一段的長度和總大小。不合就丟 ValueError。"""
+    def walk(v, depth):
+        if depth > 6:
+            raise ValueError("劇本的資料層數太多")
+        if v is None or isinstance(v, bool):
+            return v
+        if isinstance(v, int):
+            if abs(v) > 10 ** 9:
+                raise ValueError("劇本裡的數字太大")
+            return v
+        if isinstance(v, float):
+            if v != v or abs(v) > 10 ** 9:
+                raise ValueError("劇本裡的數字不對")
+            return v
+        if isinstance(v, str):
+            s = _clean(v, True)
+            if len(s) > 1500:
+                raise ValueError(f"劇本裡有一段文字太長（最多 1500 個字，目前 {len(s)} 字）")
+            return s
+        if isinstance(v, list):
+            if len(v) > 80:
+                raise ValueError("劇本裡的清單太長")
+            return [walk(x, depth + 1) for x in v]
+        if isinstance(v, dict):
+            if len(v) > 40:
+                raise ValueError("劇本的欄位太多")
+            out = {}
+            for k, x in v.items():
+                if not isinstance(k, str) or not _PB_KEY.match(k):
+                    raise ValueError("劇本的欄位名稱不對")
+                out[k] = walk(x, depth + 1)
+            return out
+        raise ValueError("劇本的資料格式不對")
+
+    if not isinstance(value, dict):
+        raise ValueError("劇本的資料格式不對")
+    out = walk(value, 0)
+    n = len(json.dumps(out, ensure_ascii=False, separators=(",", ":")))
+    if n > PLAYBOOK_MAX:
+        raise ValueError(f"劇本太長（最多 {PLAYBOOK_MAX} 個字，目前 {n} 字）")
+    return out
 
 
 def sanitize_scenario(raw, strict=True, base=None):
@@ -1398,7 +1449,17 @@ def sanitize_scenario(raw, strict=True, base=None):
             fail("示範句最多 10 句", "demo_lines")
         demo = demo[:10]
 
-    return {
+    # 劇本（三步驟精靈做的情境才有）：這次沒送就沿用原本的（用進階編輯改別的欄位不會弄丟），送 null 就是拿掉
+    playbook = raw["playbook"] if "playbook" in raw else base.get("playbook")
+    if playbook is not None:
+        try:
+            playbook = clean_playbook(playbook)
+        except ValueError as e:
+            if strict:
+                fail(str(e), "playbook")
+            playbook = None
+
+    out = {
         "id": "",
         "title": title,
         "product": product,
@@ -1416,6 +1477,9 @@ def sanitize_scenario(raw, strict=True, base=None):
         "demo_lines": demo,
         "server_only": server_only,
     }
+    if playbook is not None:
+        out["playbook"] = playbook
+    return out
 
 
 def scenario_warnings(sc):
@@ -3943,7 +4007,7 @@ class Handler(BaseHTTPRequestHandler):
         values = placeholder_values(rep_profile())
         rows = [
             {"id": sid, "title": render_text(d["title"], values), "name": render_text(d["customer"]["name"], values),
-             "avatar": d["customer"]["avatar"], "source": src}
+             "avatar": d["customer"]["avatar"], "source": src, "playbook": bool(d.get("playbook"))}
             for sid, (d, _, src) in scenario_sources().items()
         ]
         self._json(200, {
@@ -4279,7 +4343,7 @@ def stop_old_server(port):
     handle = kernel32.OpenProcess(0x0001, False, pid)  # PROCESS_TERMINATE
     if not handle:
         return
-    print("正在關掉之前開著的對練教練…")
+    print("正在關掉之前開著的 AI 業務擂台…")
     kernel32.TerminateProcess(handle, REPLACED_EXIT)
     kernel32.CloseHandle(handle)
     for _ in range(25):  # 等它放掉連接埠
@@ -4316,7 +4380,7 @@ def main():
         sys.exit(f"找不到可用的連接埠（{base_port}）" if SERVER_MODE else f"找不到可用的連接埠（{base_port}～{base_port + 9}）")
     url = f"http://127.0.0.1:{server.server_port}"
     print("=" * 52)
-    print("  AI 理專對練教練 已啟動")
+    print("  AI 業務擂台 已啟動")
     print(f"  網址：{url}")
     if SERVER_MODE:
         hosts = "、".join(sorted(allowed_hosts())) or "（沒有設定 ALLOWED_HOSTS）"

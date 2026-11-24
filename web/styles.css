@@ -1,4 +1,4 @@
-/* ---------- 主題：深色（預設，Grok 風）／淺色（ChatGPT 風） ---------- */
+/* ---------- 主題：淺色（預設，ChatGPT 風）／深色（Grok 風）。通話和來電畫面（.dark-scope）以前固定深色，現在淺色主題時也用淺色 ---------- */
 :root,
 [data-theme="dark"],
 .dark-scope,
@@ -396,8 +396,83 @@ a.pill { text-decoration: none; }
 .form-foot { position: sticky; bottom: 0; z-index: 5; display: flex; justify-content: flex-end; gap: 8px; margin-top: 32px; padding: 16px 0; background: linear-gradient(transparent, var(--bg) 35%); }
 
 /* ---------- 情境設定 ---------- */
-.row-acts { display: flex; gap: 4px; opacity: 0; transition: opacity 0.15s; }
-.list-row:hover .row-acts, .list-row:focus-within .row-acts { opacity: 1; }
+/* 每一列的動作（下載 Word、匯出、複製…）一直看得到：以前要滑鼠移上去才出現，很多人不知道有這些功能 */
+.row-acts { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px; }
+
+/* ---------- 新增情境三步驟和 Role Play 劇本（arena.js） ---------- */
+.wz-steps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 18px 0 6px; padding: 0; list-style: none; }
+.wz-steps button { display: flex; align-items: center; gap: 10px; width: 100%; padding: 10px 12px; border: 1px solid var(--line-2); border-radius: 14px; background: none; color: var(--text-2); text-align: left; cursor: pointer; }
+.wz-steps i { width: 26px; height: 26px; flex: none; display: grid; place-items: center; border-radius: 50%; background: var(--panel-2); font-style: normal; font-size: 13px; font-weight: 600; }
+.wz-steps span { display: flex; flex-direction: column; min-width: 0; line-height: 1.3; }
+.wz-steps b { font-size: 14px; font-weight: 600; color: var(--text); }
+.wz-steps small { overflow: hidden; font-size: 12px; color: var(--text-3); white-space: nowrap; text-overflow: ellipsis; }
+.wz-steps li.on button { border-color: var(--text); background: var(--panel); }
+.wz-steps li.on i { background: var(--accent); color: var(--on-accent); }
+.wz-steps li.done i { background: var(--green-bg); color: var(--green); }
+.wz-req { font-style: normal; color: var(--red); }
+#wizardBody > .field, #wizardBody > .form-grid { margin-top: 18px; }
+.wz-upload { display: flex; flex-direction: column; align-items: center; gap: 4px; margin-top: 18px; padding: 18px; border: 1.5px dashed var(--line-2); border-radius: 18px; color: var(--text-2); font-size: 13px; text-align: center; cursor: pointer; }
+.wz-upload b { font-size: 14px; font-weight: 600; color: var(--text); }
+.wz-upload:hover, .wz-upload.drag { border-color: var(--text-3); background: var(--panel); }
+.wz-msg { min-height: 20px; margin: 12px 0 0; font-size: 13.5px; color: var(--red); }
+.wz-cards { display: grid; gap: 8px; }
+.wz-card { display: flex; align-items: flex-start; gap: 12px; padding: 12px 14px; border: 1px solid var(--line-2); border-radius: 16px; background: none; color: var(--text); text-align: left; cursor: pointer; }
+.wz-card:hover { background: var(--panel); }
+.wz-card.on { border-color: var(--text); background: var(--panel); }
+.wz-card-av { width: 44px; height: 44px; flex: none; border-radius: 50%; overflow: hidden; }
+.wz-card-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; font-size: 13px; line-height: 1.6; color: var(--text-2); }
+.wz-card-main b { font-size: 15px; font-weight: 600; color: var(--text); }
+.wz-card-main small { font-size: 12.5px; color: var(--text-3); }
+.wz-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 4px; }
+.wz-tag { padding: 5px 12px; border: 1px solid var(--line-2); border-radius: 999px; background: none; color: var(--text-2); font-size: 13px; text-align: left; cursor: pointer; }
+.wz-tag.on { border-color: var(--accent); background: var(--accent); color: var(--on-accent); }
+.wz-diff { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.wz-dopt { display: flex; flex-direction: column; gap: 4px; padding: 12px 14px; border: 1px solid var(--line-2); border-radius: 16px; background: none; color: var(--text); text-align: left; cursor: pointer; }
+.wz-dopt b { font-size: 14px; font-weight: 600; }
+.wz-dopt small { font-size: 12.5px; line-height: 1.5; color: var(--text-3); }
+.wz-dopt.on { border-color: var(--text); background: var(--panel); }
+.wz-dopt.d1.on b { color: var(--green); }
+.wz-dopt.d2.on b { color: var(--amber); }
+.wz-dopt.d3.on b { color: var(--red); }
+.wz-outline { margin-top: 18px; }
+.wz-outline > .muted { margin: 0; }
+.wz-ol { margin-top: 12px; padding: 14px 18px; border-radius: 16px; background: var(--panel); }
+.wz-ol h4 { margin: 0 0 6px; font-size: 14px; font-weight: 600; }
+.wz-ol ul { margin: 0; padding: 4px 4px 4px 22px; border-radius: 8px; outline: none; font-size: 14px; line-height: 1.8; color: var(--text-2); }
+.wz-ol ul:focus { box-shadow: 0 0 0 2px var(--line-2); color: var(--text); }
+.wz-done { display: flex; flex-direction: column; gap: 4px; margin-top: 18px; padding: 18px 20px; border-radius: 18px; background: var(--green-bg); }
+.wz-done b { font-size: 16px; font-weight: 600; }
+.wz-done > span { font-size: 13.5px; color: var(--text-2); }
+.wz-acts { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.wz-sec { margin-top: 12px; border: 1px solid var(--line); border-radius: 16px; }
+.wz-sec > summary { padding: 14px 18px; font-size: 15px; font-weight: 600; cursor: pointer; list-style: none; }
+.wz-sec > summary::-webkit-details-marker { display: none; }
+.wz-sec > summary::after { content: "›"; float: right; color: var(--text-3); transition: transform 0.15s; }
+.wz-sec[open] > summary::after { transform: rotate(90deg); }
+.wz-doc { padding: 0 18px 18px; overflow-x: auto; font-size: 14px; line-height: 1.7; }
+.wz-doc > .muted { margin: 0 0 4px; }
+.wz-doc h4 { margin: 16px 0 6px; font-size: 14px; font-weight: 600; }
+.wz-doc ul, .wz-doc ol { margin: 0; padding-left: 20px; }
+.wz-table { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 13.5px; }
+.wz-table th { padding: 8px 10px; background: var(--panel-2); font-weight: 600; text-align: left; }
+.wz-table td { padding: 8px 10px; border-top: 1px solid var(--line); vertical-align: top; word-break: break-word; }
+.wz-table td.wz-span { background: var(--panel); font-weight: 600; }
+.wz-red { color: var(--red); }
+.wz-star { color: var(--green); }
+.wz-chat { display: flex; flex-direction: column; gap: 10px; margin-top: 10px; padding: 16px; border-radius: 16px; background: var(--panel); }
+.wz-round { align-self: center; margin: 8px 0 2px; padding: 3px 14px; border-radius: 999px; background: var(--panel-2); font-size: 13px; font-weight: 600; }
+.wz-row { display: flex; flex-direction: column; align-items: flex-start; max-width: 78%; }
+.wz-row.adv { align-self: flex-end; align-items: flex-end; }
+.wz-who { margin-bottom: 3px; font-size: 12px; color: var(--text-3); }
+.wz-bub { padding: 10px 14px; border-radius: 16px; outline: none; background: var(--bg); font-size: 14.5px; line-height: 1.75; white-space: pre-wrap; }
+.wz-row.adv .wz-bub { background: var(--green-bg); }
+.wz-bub:focus { box-shadow: 0 0 0 2px var(--line-2); }
+.wz-chat-foot { display: flex; justify-content: flex-end; margin-top: 12px; }
+@media (max-width: 860px) {
+  .wz-steps small { display: none; }
+  .wz-diff { grid-template-columns: 1fr; }
+  .wz-row { max-width: 92%; }
+}
 /* 標籤固定在最右邊：每列的按鈕數量不同，放在按鈕後面才會對齊 */
 .list-row > .tag { flex: none; order: 1; }
 .ai-box { margin-top: 20px; padding: 16px; border-radius: 18px; background: var(--panel); }
@@ -456,7 +531,7 @@ a.pill { text-decoration: none; }
 .menu-item .d { width: 7px; height: 7px; flex: none; margin-top: 7px; border-radius: 50%; background: var(--green); }
 .menu-item.bad .d { background: var(--red); }
 
-/* ---------- 通話：客戶佔滿畫面（像直播、視訊通話），資訊浮在影像上；一律深色 ---------- */
+/* ---------- 通話：客戶佔滿畫面（像直播、視訊通話），資訊浮在影像上。這一段是深色的樣子；淺色主題的在後面「淺色主題：通話中和來電畫面」 ---------- */
 .call { position: fixed; inset: 0; z-index: 10; display: flex; overflow: hidden; background: #000; color: var(--text); }
 /* 手機鍵盤打開：只用鍵盤上面那一塊（--vvh、--vvt 由程式跟著 visualViewport 更新） */
 .call.kb-open { bottom: auto; top: var(--vvt, 0px); height: var(--vvh, 100%); }
@@ -823,7 +898,6 @@ mark.bad { padding: 0 2px; border-radius: 4px; background: var(--mark); color: i
 .round.decline { background: var(--panel-2); color: var(--text); }
 .dialing #btnAccept { opacity: 0.4; pointer-events: none; }
 .ring-overlay { overflow: hidden; background: rgba(0, 0, 0, 0.82); }
-[data-theme="light"] .ring-overlay { background: rgba(0, 0, 0, 0.82); }
 .ring-overlay::before { content: ""; position: absolute; inset: -60px; background: var(--ring-photo, none) 50% 28% / cover no-repeat; filter: blur(36px) brightness(0.42); opacity: 0; transition: opacity 0.4s; }
 .ring-overlay.has-photo::before { opacity: 1; }
 .ring-overlay .call-modal { position: relative; border-color: rgba(255, 255, 255, 0.08); background: rgba(22, 22, 22, 0.72); -webkit-backdrop-filter: blur(20px); backdrop-filter: blur(20px); }
@@ -856,6 +930,113 @@ mark.bad { padding: 0 2px; border-radius: 4px; background: var(--mark); color: i
 .eval-steps li.done::before { border-color: var(--text-2); background: var(--text-2); }
 .eval-slow { margin: 18px 0 0 !important; }
 .eval-cancel { display: flex; margin: 18px auto 0; }
+
+/* ---------- 淺色主題：通話中和來電畫面也用淺色 ----------
+   .dark-scope（通話、來電）原本不管主題一律深色；淺色主題時改用淺色的顏色變數，
+   再把通話畫面裡直接寫死的深色（白字、黑底、陰影）一項一項換掉。深色主題不受影響。 */
+[data-theme="light"] .dark-scope,
+[data-theme="light"] .app.in-call ~ #toasts {
+  --bg: #ffffff; --sidebar: #f9f9f9; --panel: #f7f7f7; --panel-2: #efefef; --hover: #e8e8e8;
+  --line: rgba(0, 0, 0, 0.08); --line-2: rgba(0, 0, 0, 0.15);
+  --text: #0d0d0d; --text-2: #5d5d5d; --text-3: #8f8f8f; --accent: #0d0d0d; --on-accent: #ffffff;
+  --green: #16a34a; --green-bg: rgba(22, 163, 74, 0.1); --red: #dc2626; --red-strong: #dc2626; --red-bg: rgba(220, 38, 38, 0.08);
+  --amber: #b45309; --amber-bg: rgba(217, 119, 6, 0.1); --mark: rgba(220, 38, 38, 0.16);
+  --shadow: 0 12px 40px rgba(0, 0, 0, 0.12); --composer-shadow: 0 0 0 1px rgba(0, 0, 0, 0.08), 0 8px 28px rgba(0, 0, 0, 0.06);
+  color-scheme: light;
+}
+/* 舞台 */
+[data-theme="light"] .call { background: var(--sidebar); }
+[data-theme="light"] .stage-frame { background: #fff; }
+[data-theme="light"] .stage { background: radial-gradient(120% 80% at 50% 36%, #ffffff 0%, #f4f5f7 58%, #e9ebef 100%); }
+[data-theme="light"] .stage-glow { box-shadow: inset 0 0 calc(40px + var(--level) * 120px) calc(var(--level) * 16px) rgba(13, 13, 13, calc(0.04 + var(--level) * 0.14)); }
+/* 上下各一層白色漸層：客戶是影像或照片時，壓在上面的深色字才看得清楚 */
+[data-theme="light"] .stage-shade { background: linear-gradient(to bottom, rgba(255, 255, 255, 0.9), transparent 26%), linear-gradient(to top, rgba(255, 255, 255, 0.96), transparent 50%); }
+[data-theme="light"] .halo { background: #0d0d0d; }
+/* 上方資訊 */
+[data-theme="light"] .ct-bar { color: var(--text); text-shadow: 0 1px 2px rgba(255, 255, 255, 0.8); }
+[data-theme="light"] .cust-state, [data-theme="light"] .ct-title, [data-theme="light"] .trust { color: var(--text-2); }
+[data-theme="light"] .cust-state[data-state="speaking"]::before, [data-theme="light"] .cust-state[data-state="listening"]::before { background: var(--text); }
+[data-theme="light"] .timer { background: rgba(0, 0, 0, 0.06); color: var(--text); }
+[data-theme="light"] .timer .of { color: var(--text-3); }
+[data-theme="light"] .timer.near { background: rgba(0, 0, 0, 0.13); }
+[data-theme="light"] .timer.over, [data-theme="light"] .timer.over .of { color: var(--amber); }
+[data-theme="light"] .trust-bar { background: rgba(0, 0, 0, 0.12); }
+[data-theme="light"] .trust-fill { background: var(--text); }
+[data-theme="light"] .trust-fill.low { background: var(--red); }
+[data-theme="light"] .trust-fill.mid { background: var(--amber); }
+[data-theme="light"] .trust-fill.high { background: var(--green); }
+[data-theme="light"] .trust b { color: var(--text); }
+[data-theme="light"] .ct-meta .seg { background: rgba(0, 0, 0, 0.06); }
+[data-theme="light"] .src-tag { background: rgba(0, 0, 0, 0.06); color: var(--text-2); }
+[data-theme="light"] .mode-tag { background: rgba(0, 0, 0, 0.06); color: var(--text); }
+[data-theme="light"] .mode-tag .mt-hint { color: var(--text-2); }
+[data-theme="light"] .mode-tag .mt-retry { color: var(--text); }
+/* 接通中的等待提示 */
+[data-theme="light"] .stage-wait { background: rgba(255, 255, 255, 0.92); box-shadow: var(--shadow); color: var(--text); }
+[data-theme="light"] .stage-wait .spinner { border-color: rgba(0, 0, 0, 0.15); border-top-color: var(--text); }
+[data-theme="light"] .stage-wait span { color: var(--text-2); }
+/* 字幕串：客戶的話是白底，自己的話是深色底；教練提示淡藍、合規警示淡紅 */
+[data-theme="light"] .feed-item { background: rgba(255, 255, 255, 0.94); box-shadow: 0 0 0 1px var(--line); color: var(--text); }
+[data-theme="light"] .feed-item .who { color: var(--text-3); }
+[data-theme="light"] .feed-item.rep { background: var(--accent); box-shadow: none; color: var(--on-accent); }
+[data-theme="light"] .feed-item.rep .who { color: rgba(255, 255, 255, 0.62); }
+[data-theme="light"] .feed-item.flagged { box-shadow: inset 0 0 0 1.5px var(--red-strong); }
+[data-theme="light"] .feed-item mark.bad { background: rgba(239, 68, 68, 0.38); }
+[data-theme="light"] .feed-item .dots i { background: var(--text-3); }
+[data-theme="light"] .feed-item.tip { border-color: #b7dbe6; background: #e8f5f9; box-shadow: none; }
+[data-theme="light"] .feed-item.tip .who { color: #0e7490; }
+[data-theme="light"] .feed-item.alert { border-color: #f3b4b4; background: #fdecec; box-shadow: none; }
+[data-theme="light"] .feed-item.alert .who { color: var(--red); }
+[data-theme="light"] .interim { border-color: var(--line-2); background: rgba(255, 255, 255, 0.85); color: var(--text); }
+[data-theme="light"] .interim .who { color: var(--text-3); }
+/* 右邊的工具 */
+[data-theme="light"] .rail-btn { color: var(--text); }
+[data-theme="light"] .rail-ic { border-color: var(--line-2); background: rgba(255, 255, 255, 0.92); }
+[data-theme="light"] .rail-btn:hover .rail-ic { background: var(--hover); }
+[data-theme="light"] .rail-btn.on .rail-ic { border-color: var(--accent); background: var(--accent); color: var(--on-accent); }
+[data-theme="light"] .rail-btn.off .rail-ic { border-color: var(--red-strong); background: var(--red-strong); color: #fff; }
+[data-theme="light"] .rail-label { text-shadow: 0 1px 2px rgba(255, 255, 255, 0.8); }
+[data-theme="light"] .badge { background: var(--accent); box-shadow: 0 0 0 2px #fff; color: var(--on-accent); }
+[data-theme="light"] .badge.alert { background: var(--red-strong); color: #fff; }
+[data-theme="light"] .rail-btn.busy .rail-ic::after { border-top-color: var(--text); }
+/* 輸入框和通話按鈕 */
+[data-theme="light"] .composer-box { border-color: var(--line-2); background: #fff; box-shadow: var(--composer-shadow); }
+[data-theme="light"] .composer-box:focus-within { border-color: var(--text-3); background: #fff; }
+[data-theme="light"] .round-btn { color: var(--text-2); }
+[data-theme="light"] .round-btn:hover { background: var(--hover); color: var(--text); }
+[data-theme="light"] #textInput { color: var(--text); }
+[data-theme="light"] #textInput::placeholder { color: var(--text-3); }
+[data-theme="light"] .send { background: var(--accent); color: var(--on-accent); }
+[data-theme="light"] .mic { background: #fff; box-shadow: 0 0 0 1px var(--line-2); color: var(--text); }
+[data-theme="light"] .mic:hover { background: var(--hover); }
+[data-theme="light"] .mic.on { background: var(--accent); box-shadow: none; color: var(--on-accent); }
+[data-theme="light"] .mic.muted { background: var(--red-strong); box-shadow: none; color: #fff; }
+[data-theme="light"] .mic-level { border-color: var(--text); }
+[data-theme="light"] .end-btn { border-color: var(--line-2); background: #fff; color: var(--text); }
+[data-theme="light"] .end-btn:hover { background: var(--hover); }
+[data-theme="light"] .composer-foot { color: var(--text-3); text-shadow: none; }
+[data-theme="light"] .auto-listen { color: var(--text-2); text-shadow: none; }
+[data-theme="light"] .auto-listen .knob { background: rgba(0, 0, 0, 0.2); }
+[data-theme="light"] .auto-listen input:checked + .knob { background: var(--text); }
+[data-theme="light"] .mic-state.muted { color: var(--red); }
+[data-theme="light"] .call :focus-visible { outline-color: var(--text); }
+@media (max-width: 899px) {
+  [data-theme="light"] .sheet { box-shadow: 0 -12px 40px rgba(0, 0, 0, 0.16); }
+  [data-theme="light"] .sheet-backdrop { background: rgba(0, 0, 0, 0.25); }
+}
+@media (min-width: 900px) {
+  [data-theme="light"] .stage-frame { box-shadow: 0 0 0 1px var(--line-2), 0 10px 36px rgba(0, 0, 0, 0.07); }
+}
+/* 來電畫面 */
+[data-theme="light"] .ring-overlay { background: rgba(244, 245, 247, 0.92); }
+[data-theme="light"] .ring-overlay::before { filter: blur(36px) brightness(1.08); }
+[data-theme="light"] .ring-overlay.has-photo::before { opacity: 0.35; }
+[data-theme="light"] .ring-overlay .call-modal { border-color: var(--line); background: rgba(255, 255, 255, 0.94); }
+[data-theme="light"] .ring-overlay .call-avatar .ring { background: var(--text); }
+[data-theme="light"] .ring-overlay .round.decline { background: var(--panel-2); color: var(--text); }
+@media (max-width: 899px) {
+  [data-theme="light"] .ring-overlay .call-modal { border: none; background: transparent; }
+}
 
 /* ---------- 通知 ---------- */
 #toasts { position: fixed; top: 72px; left: 50%; z-index: 60; display: flex; flex-direction: column; align-items: center; gap: 8px; width: max-content; max-width: calc(100vw - 32px); transform: translateX(-50%); pointer-events: none; }

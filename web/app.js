@@ -256,6 +256,7 @@ function setNav(name) {
 // 正在看的表單有沒有改到一半
 function formDirty() {
   if ($('#view-rep').classList.contains('active') && Rep.dirty) return true;
+  if ($('#view-wizard').classList.contains('active') && Arena.dirty) return true; // 新增情境的三步驟
   return $('#view-editor').classList.contains('active') && ScenarioAdmin.dirty;
 }
 
@@ -273,6 +274,7 @@ function leaveCallIfNeeded() {
 
 function go(name) {
   if (!leaveCallIfNeeded()) return;
+  Arena.discard(); // 已經確認要離開：三步驟裡沒存的內容不用再問第二次
   if (name === 'history') renderHistory();
   if (name === 'rep') Rep.render();
   if (name === 'scenarios') ScenarioAdmin.renderList();
@@ -882,7 +884,7 @@ const CG_REASON = {
   rate_limited: '試太多次了，請 10 分鐘後再試',
   redirect: '雲端網址被轉址了：請貼瀏覽器網址列最後顯示的網址',
   cloud: '雲端沒有收下憑證，請看「管理 → 系統設定」裡的說明',
-  cloud_not_app: '這個網址不是對練教練的雲端版',
+  cloud_not_app: '這個網址不是 AI 業務擂台的雲端版',
   cloud_unreachable: '連不到雲端網站',
   cloud_blocked: '雲端擋住了：請用正式網址（https://專案名.vercel.app），或關掉 Deployment Protection',
   sync_failed: '雲端沒有收下憑證，請再試一次',
@@ -1742,28 +1744,36 @@ const ScenarioAdmin = (() => {
       return;
     }
     box.innerHTML = meta.scenarios.map((s) => {
-      const acts = [`<button class="pill sm ghost" type="button" data-act="copy">複製</button>`];
+      // playbook：用三步驟做的情境（有劇本）。點開看劇本、可以匯出成情境檔；想直接改每個欄位就按「進階編輯」
+      const acts = ['<button class="pill sm ghost" type="button" data-act="word">下載 Word</button>'];
+      if (s.playbook) acts.push('<button class="pill sm ghost" type="button" data-act="export">匯出</button>', '<button class="pill sm ghost" type="button" data-act="advanced">進階編輯</button>');
+      acts.push('<button class="pill sm ghost" type="button" data-act="copy">複製</button>');
       if (s.source === 'custom') acts.push('<button class="pill sm ghost" type="button" data-act="delete">刪除</button>');
       if (s.source === 'modified') acts.push('<button class="pill sm ghost" type="button" data-act="restore">還原預設</button>');
       return `<div class="list-row" role="button" tabindex="0" data-id="${esc(s.id)}">
         <div class="av">${avatarSVG(s.avatar)}</div>
         <div class="list-main"><b>${esc(s.name)} · ${esc(s.title)}</b></div>
-        <span class="tag">${esc(SOURCE_TAG[s.source] || '')}</span>
+        ${s.playbook ? '<span class="tag green">有劇本</span>' : ''}<span class="tag">${esc(SOURCE_TAG[s.source] || '')}</span>
         <div class="row-acts">${acts.join('')}</div>
       </div>`;
     }).join('');
     $$('.list-row', box).forEach((row) => {
       const s = meta.scenarios.find((x) => x.id === row.dataset.id);
-      row.addEventListener('click', () => open(s.id));
+      const openRow = () => (s.playbook ? Arena.open(s.id) : open(s.id));
+      row.addEventListener('click', openRow);
       row.addEventListener('keydown', (e) => {
         if (e.target !== row || (e.key !== 'Enter' && e.key !== ' ')) return;
         e.preventDefault();
-        open(s.id);
+        openRow();
       });
       $$('[data-act]', row).forEach((b) => b.addEventListener('click', (e) => {
         e.stopPropagation();
-        if (b.dataset.act === 'copy') open(s.id, { copy: true });
-        else remove(s, b.dataset.act === 'restore');
+        const act = b.dataset.act;
+        if (act === 'word') Arena.downloadDoc(s.id);
+        else if (act === 'export') Arena.exportFile(s.id);
+        else if (act === 'advanced') open(s.id);
+        else if (act === 'copy') open(s.id, { copy: true });
+        else remove(s, act === 'restore');
       }));
     });
   }
@@ -2160,7 +2170,13 @@ const ScenarioAdmin = (() => {
     }
   });
 
-  $('#btnNewScenario').addEventListener('click', () => open(''));
+  $('#btnNewScenario').addEventListener('click', () => Arena.open()); // 三步驟；裡面可以改用這裡的空白表單（進階）
+  $('#btnImportScenario').addEventListener('click', () => $('#importScenarioFile').click());
+  $('#importScenarioFile').addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    e.target.value = '';
+    if (await Arena.importFile(file)) renderList();
+  });
   $('#btnEditorSave').addEventListener('click', save);
   $('#btnEditorCancel').addEventListener('click', () => go('scenarios'));
   $('#btnEditorBack').addEventListener('click', () => go('scenarios'));
@@ -5127,6 +5143,12 @@ function renderReport(r, ctx) {
 
 $$('.nav-item').forEach((b) => b.addEventListener('click', () => go(b.dataset.nav)));
 AdminNav.init();
+// 新增情境三步驟、劇本、下載 Word、情境檔匯出匯入（arena.js）
+Arena.init({
+  api, toast, go, show, setNav, reloadScenarios, startCall, avatarSVG,
+  openEditor: (id) => ScenarioAdmin.open(id),
+  scenario: (id) => state.scenarios.find((s) => s.id === id),
+});
 
 // 說明文字收在標題旁的 ⓘ 裡：點一下展開、再點收起（手機沒有滑鼠停留，所以用點的）。
 // 有狀況要處理時（data-must，見 infoMust）一定顯示，點 ⓘ 也收不起來

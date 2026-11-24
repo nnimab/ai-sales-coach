@@ -1081,7 +1081,7 @@ class ChatGPT:
                              fallback=False)
         hid = str(data.get("host_id") or "")
         if data.get("app") != APP_ID or not _HOST_RE.match(hid):
-            raise BrainError("這個網址不是對練教練的雲端版", code="cloud_not_app", fallback=False)
+            raise BrainError("這個網址不是 AI 業務擂台的雲端版", code="cloud_not_app", fallback=False)
         return hid
 
     def push_to_cloud(self, cloud_url, sync_key):

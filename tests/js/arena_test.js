@@ -14,14 +14,14 @@ const KEYS = new Set(['業務姓', '業務全名', '業務稱呼', '職稱', '�
 function cases() {
   const out = [];
   for (const pid of ['owner', 'eng', 'senior']) {
-    for (const type of ['bond', 'fund', 'custom']) {
+    for (const type of ['fcn', 'bond', 'fund', 'custom']) {
       for (const d of [1, 2, 3]) {
         // 一半用正常的內容，一半每一格都塞到最長、還帶大括號
         const long = (out.length % 2) === 1;
         out.push({
           type, pid, d,
           p: long
-            ? { name: `{測試}${LONG}`, issuer: LONG, code: 'XS3034046279', ccy: LONG, risk: 'RR3', coupon: LONG, tenor: LONG, rating: LONG, call: LONG, extra: LONG, risks: `1. ${LONG}\n2. 信用風險\n3. {怪}風險` }
+            ? { name: `{測試}${LONG}`, issuer: LONG, code: 'XS3034046279', ccy: LONG, risk: 'RR3', under: LONG, coupon: LONG, tenor: LONG, strike: LONG, rating: LONG, call: LONG, ki: LONG, extra: LONG, risks: `1. ${LONG}\n2. 信用風險\n3. {怪}風險` }
             : { name: '高盛 20 年期步階票息美元債', issuer: '高盛金融國際有限公司', code: 'XS3034046279', ccy: '美元 USD', risk: 'RR3', coupon: '前二年 9%、第三年起 4%，每季付息', tenor: '20 年', rating: 'S&P A+', call: '第 2 年起發行機構有權提前買回', extra: '', risks: '' },
           c: long ? { name: LONG, age: '999', job: LONG, asset: LONG } : { name: '', age: '', job: '', asset: '' },
           ph: long ? [LONG, '你講白話一點', '每個月要讓我看到錢', '這跟ETF比差在哪？', '定存至少不會少', 'a', 'b', 'c', 'd', 'e'] : ['你講白話一點'],
@@ -49,9 +49,9 @@ const tests = [];
 const test = (name, fn) => tests.push([name, fn]);
 const len = (s, lo, hi, what) => assert.ok(typeof s === 'string' && s.length >= lo && s.length <= hi, `${what} 長度 ${String(s).length}，要在 ${lo}～${hi}`);
 
-test('27 種組合：每個欄位都在伺服器收得下的範圍', () => {
+test('36 種組合（三種人設 × 四種商品 × 三種刁難度）：每個欄位都在伺服器收得下的範圍', () => {
   const all = cases();
-  assert.equal(all.length, 27);
+  assert.equal(all.length, 36);
   for (const raw of all) {
     const { sc } = build(raw);
     const tag = `${raw.pid}/${raw.type}/${raw.d}`;
@@ -98,6 +98,50 @@ test('27 種組合：每個欄位都在伺服器收得下的範圍', () => {
     assert.ok(size <= 24000, `${tag} 劇本 ${size} 字，超過 24000`);
     for (const r of sc.playbook.rows) assert.ok(r.m ? r.l.length <= 40 : r.t.length <= 1500, `${tag} 對話太長`);
   }
+});
+
+test('商品類型：FCN 排第一個；每種類型用自己的欄位，基金不出現債券的說法', () => {
+  assert.deepEqual(Object.keys(Arena.TYPES), ['fcn', 'bond', 'fund', 'custom']);
+  const labels = (t) => Arena.fieldsOf(t).map((f) => f[1]).join('、');
+  assert.ok(!/債券|票息|提前贖回|發行機構/.test(labels('fund')), labels('fund'));
+  assert.ok(/基金公司/.test(labels('fund')) && /配息機制/.test(labels('fund')));
+  assert.ok(/連結標的/.test(labels('fcn')) && /履約價/.test(labels('fcn')) && /下限價/.test(labels('fcn')));
+  assert.ok(/債券信用評等/.test(labels('bond')) && /提前贖回條件/.test(labels('bond')));
+  // 換過類型留下來的舊內容不會混進去：基金沒有信用評等、履約價、連結標的
+  const ctx = Arena.normalize({ type: 'fund', pid: 'owner', p: { name: '某某基金', rating: 'S&P A', strike: '85%', under: 'NVDA' } });
+  assert.equal(ctx.p.rating + ctx.p.strike + ctx.p.under, '');
+});
+
+test('基金：三種人設都不會出現發行機構倒閉、信用評等、20 年期、提前買回這些債券才有的話', () => {
+  for (const pid of ['owner', 'eng', 'senior']) {
+    const { ctx, sc, rows, ol } = build({ type: 'fund', pid, d: 3, p: { name: '某某收益基金', issuer: '某某投信', coupon: '每月配息', rating: '不該出現' } });
+    const said = [rows.map((r) => r.t || '').join(' '), sc.server_only.persona, sc.server_only.behavior, sc.server_only.coach_notes, sc.server_only.product_facts,
+      ol.prod.join(' '), ol.cust.join(' '), ol.atk.join(' '), sc.customer.summary, sc.learner_task, sc.checklist.map((c) => c.label + c.hint).join(' '),
+      Arena.sec3(ctx, false)].join(' ');
+    const bad = said.match(/.{0,12}(信用評等|發行機構|違約|不該出現|債券|20\s*年|提前買回|直債).{0,12}/);
+    assert.equal(bad, null, `${pid}：${bad && bad[0]}`);
+    assert.equal(sc.rubric_type, 'fund');
+  }
+  // 預設口頭禪：基金不列「20年期太長」「提前買回」；FCN 只少「20年期太長」
+  assert.equal(Arena.PHRASES.filter((t) => Arena.fitsType('fund', t)).length, Arena.PHRASES.length - 2);
+  assert.equal(Arena.PHRASES.filter((t) => Arena.fitsType('fcn', t)).length, Arena.PHRASES.length - 1);
+  assert.equal(Arena.PHRASES.filter((t) => Arena.fitsType('bond', t)).length, Arena.PHRASES.length);
+});
+
+test('FCN：講得到連結標的、履約價、承接風險，評分標準用一般', () => {
+  const { sc, rows, ol } = build({ type: 'fcn', pid: 'eng', d: 2, p: { name: '美元 6 個月期 FCN', issuer: '某某銀行', under: 'NVDA、TSLA', coupon: '年化 12%，每月配息', tenor: '6 個月', strike: '期初價格的 85%', call: '每月觀察，全部標的高於期初價就提前出場', ki: '期初價格的 65%' } });
+  const said = rows.map((r) => r.t || '').join(' ');
+  for (const w of ['NVDA、TSLA', '期初價格的 85%', '期初價格的 65%', '承接', '不保本', '提前出場']) assert.ok(said.includes(w), w);
+  assert.ok(!said.includes('調整債券部位'));
+  assert.equal(sc.rubric_type, 'general');
+  assert.ok(sc.server_only.product_facts.includes('連結標的：NVDA、TSLA') && sc.server_only.product_facts.includes('履約價：'));
+  assert.ok(sc.server_only.product_facts.includes('非保本'));
+  assert.ok(ol.prod.some((x) => x.startsWith('下限價（KI）：')));
+  assert.ok(sc.checklist.some((c) => c.label === '講清跌破時的承接風險'));
+  const parsed = Arena.parseProduct(['商品名稱：美元 FCN', '連結標的：NVDA、TSLA', '履約價：85%', '下限價(KI)：65%', '提前出場(KO)：100%'].join(String.fromCharCode(10)), 'FCN.docx');
+  assert.equal(parsed.type, 'fcn');
+  assert.equal(parsed.under, 'NVDA、TSLA');
+  assert.equal(parsed.strike, '85%');
 });
 
 test('刁難度：信任度 60／45／25，犀利挑剔多一輪質疑', () => {

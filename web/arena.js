@@ -8,20 +8,33 @@
 const Arena = (() => {
   // ------------------------------------------------------------------ 資料（照生成器原樣）
 
-  const TYPES = { bond: '海外債', fund: '共同基金', custom: '自訂其他商品' };
-  const RUBRIC = { bond: 'bond', fund: 'fund', custom: 'general' }; // 對到 App 產品面的三種評分標準
+  // 商品類型，照這個順序排（FCN 排第一個，新增情境時預設也選它）
+  const TYPES = { fcn: 'FCN', bond: '海外債', fund: '共同基金', custom: '自訂其他商品' };
+  const RUBRIC = { fcn: 'general', bond: 'bond', fund: 'fund', custom: 'general' }; // 對到 App 產品面的三種評分標準
   const UNITS = ['財經部', '金商部', '業管部'];
-  const FK = ['name', 'issuer', 'code', 'ccy', 'risk', 'coupon', 'tenor', 'rating', 'call', 'extra', 'risks'];
-  const FIELD_LABEL = {
-    name: '商品名稱', issuer: '發行機構', code: '商品代號 ISIN', ccy: '計價幣別', risk: '風險等級', coupon: '票息／配息條件',
-    tenor: '到期／閉鎖期', rating: '債券信用評等', call: '提前贖回條件', extra: '額外條件', risks: '必揭露風險清單',
+  // 商品資料全部的欄位（存在劇本裡的名字）；每種類型只會用到其中幾個
+  const FK = ['name', 'issuer', 'code', 'ccy', 'risk', 'under', 'coupon', 'tenor', 'strike', 'rating', 'call', 'ki', 'extra', 'risks'];
+  // 每種商品類型要填哪些欄位、畫面上叫什麼：基金不是債券，沒有票息、信用評等、提前贖回這些，要用基金自己的說法
+  const FIELDS = {
+    fcn: [['name', '商品名稱'], ['issuer', '發行機構'], ['code', '商品代號 ISIN'], ['ccy', '計價幣別'], ['risk', '風險等級'], ['under', '連結標的'],
+      ['coupon', '固定配息率'], ['tenor', '天期／到期日'], ['strike', '履約價'], ['call', '提前出場條件（KO）'], ['ki', '下限價（KI）'], ['rating', '發行機構信用評等'],
+      ['extra', '額外條件'], ['risks', '必揭露風險清單']],
+    bond: [['name', '商品名稱'], ['issuer', '發行機構'], ['code', '商品代號 ISIN'], ['ccy', '計價幣別'], ['risk', '風險等級'], ['coupon', '票息條件'],
+      ['tenor', '到期日／年期'], ['rating', '債券信用評等'], ['call', '提前贖回條件'], ['extra', '額外條件'], ['risks', '必揭露風險清單']],
+    fund: [['name', '基金名稱'], ['issuer', '基金公司／投信'], ['code', '基金代碼／ISIN'], ['ccy', '計價幣別'], ['risk', '風險等級'], ['coupon', '配息機制與頻率'],
+      ['tenor', '基金類型／閉鎖期'], ['call', '贖回限制與費用'], ['extra', '額外條件'], ['risks', '必揭露風險清單']],
+    custom: [['name', '商品名稱'], ['issuer', '發行／管理機構'], ['code', '商品代號'], ['ccy', '計價幣別'], ['risk', '風險等級'], ['coupon', '收益條件'],
+      ['tenor', '期間'], ['rating', '信用評等'], ['call', '提前終止條件'], ['extra', '額外條件'], ['risks', '必揭露風險清單']],
   };
+  const fieldsOf = (type) => FIELDS[type] || FIELDS.bond;
   const PH = {
+    fcn: { name: '例：美元計價 6 個月期 FCN', issuer: '發行／保證機構全名', code: 'ISIN 碼', ccy: '例：美元 USD', under: '例：NVDA、TSLA（表現最差的一檔決定結果）', coupon: '例：年化 12%，每月配息', tenor: '例：6 個月', strike: '例：期初價格的 85%', call: '例：每月觀察，全部標的 ≥ 期初價 100% 就提前出場', ki: '例：期初價格的 65%（沒有就留空）', rating: '例：S&P A+', extra: '例：最低申購金額、閉鎖期', risks: '一行一項，例：1. 非保本' },
     bond: { name: '例：某某公司 20 年期美元債', issuer: '發行機構全名', code: 'ISIN 碼', ccy: '例：美元 USD', coupon: '票息率、付息頻率', tenor: '到期日／年期', rating: '例：Fitch A／S&P BBB+', call: '例：第 X 年起發行商有權提前贖回', extra: '例：閉鎖期、最低申購金額', risks: '一行一項，例：1. 信用風險' },
     fund: { name: '基金名稱', issuer: '基金公司／投信', code: '基金代碼／ISIN', ccy: '計價幣別', coupon: '配息機制與頻率', tenor: '閉鎖期／基金型態', rating: '（基金可留空）', call: '贖回限制', extra: '例：成立後閉鎖期 90 天', risks: '一行一項' },
     custom: { name: '商品名稱', issuer: '發行／管理機構', code: '商品代號', ccy: '計價幣別', coupon: '收益條件', tenor: '期間', rating: '信用評等', call: '提前終止條件', extra: '其他條件', risks: '一行一項' },
   };
   const RISK_DEF = {
+    fcn: ['非保本商品，最壞情況可能損失全部本金', '連結標的下跌風險：到期若跌破約定價格，可能要用履約價承接表現最差的標的，本金會虧損', '發行機構信用風險', '流動性風險：到期前不易賣出，提前贖回可能折價', '提前出場與再投資風險', '匯率風險', '非存款保險標的，配息固定不代表保本'],
     bond: ['發行機構信用／違約風險', '利率風險：賣出價格可能低於買進成本', '流動性風險：買賣價差大、可能無法即時賣出', '提前贖回與再投資風險', '匯率風險', '非存款保險標的，不保證收益，可能損失本金'],
     fund: ['市場價格波動與本金虧損風險', '配息可能由本金支付，配息率不代表報酬', '匯率風險', '流動性與贖回限制風險', '過去績效不代表未來表現', '非存款保險標的，不保證收益，可能損失本金'],
     custom: ['市場價格波動風險', '信用風險', '流動性風險', '匯率風險', '非存款保險標的，不保證收益，可能損失本金'],
@@ -139,7 +152,10 @@ const Arena = (() => {
     eng: { k: ['與 ETF 的客觀比較、流動性與買賣價差、費用透明', '貶低 ETF、隱瞞價差、說隨時可原價賣出'], label: '客觀比較 ETF 與流動性', hint: '費用、流動性、買賣價差照實說明，不貶低 ETF' },
     senior: { k: ['不保證、白話、只放閒置資金、邀請家人一同了解', '保證不會賠、連續使用專有名詞'], label: '不保證並同理怕賠的心情', hint: '不說不會賠；只放閒置資金，邀請家人一起了解' },
   };
+  // 「保守賠過錢企業主」的第一個痛點是照債券寫的（發行機構倒閉、信用評等）；基金沒有這些，換成怕淨值一直跌
+  const P1K_FUND_OWNER = { k: ['淨值波動與本金虧損、非存款保險、過去績效不代表未來、配置比重與分散', '保證不會賠、說很穩、拿過去績效當保證'], label: '回應怕再虧損的疑慮', hint: '淨值會波動、非保本、非存款保險；建議分散、控制比重' };
   const P2K = {
+    fcn: { k: ['到期跌破履約價可能承接標的、非保本、最壞損失本金、提前出場與再投資', '只講固定配息、說保本或穩領息、淡化承接標的的風險'], label: '講清跌破時的承接風險', hint: '到期跌破履約價可能承接最差標的；非保本，最壞損失本金', demo: '配息是固定的，但不保本；到期若標的跌破履約價，可能要承接股票，本金會虧損。' },
     bond: { k: ['提前贖回條款原文、再投資風險、不保證是否被贖回', '保證不會被贖回、只講前段高息'], label: '講清提前贖回與再投資', hint: '條款照實說；被買回後利率不一定一樣好，不保證會不會被贖回', demo: '如果被提前買回，您會拿回本金，但之後的利率不一定一樣好，這就是再投資風險。' },
     fund: { k: ['配息可能來自本金、看總報酬、金額不保證', '承諾固定配息、拿配息比定存'], label: '講清配息可能來自本金', hint: '配息不保證；要一起看淨值走勢和總報酬', demo: '配息不是保證的，也可能由本金支付，所以要一起看淨值走勢和總報酬。' },
     custom: { k: ['列出主要風險、先確認適配度', '淡化風險、忽略適合度'], label: '說明主要風險與最壞情況', hint: '最壞可能損失本金；先確認適不適合，再談金額', demo: '最壞的情況可能損失本金，所以我會先確認它適不適合您，再談金額。' },
@@ -176,16 +192,34 @@ const Arena = (() => {
   const one = (s, n) => clip(tidy(s).replace(/\s+/g, ' '), n); // 單行
   const many = (s, n) => clip(tidy(s).replace(/\r\n?/g, '\n').replace(/\n{3,}/g, '\n\n'), n); // 多行
   const persona = (id) => PERSONAS.find((p) => p.id === id) || PERSONAS[0];
+  // 人設卡的痛點和攻防重點原本是照債券寫的（長年期、發行機構倒閉、提前買回、直債）：基金和 FCN 換成自己的說法
+  const PERSONA_BY_TYPE = {
+    fund: {
+      owner: { pain: '曾有投資重大虧損，深怕資產再縮水，對淨值波動和本金虧損極度戒備', axis: '淨值波動與虧損風險的說明、資金配置比重與停損機制', axisShort: '虧損風險與配置比重' },
+      eng: { pain: '重視資金彈性與流動性，在意閉鎖期、贖回限制和費用，習慣拿 ETF 和其他基金比較', axis: '流動性與贖回限制、與 ETF 的差異比較', axisShort: '流動性與 ETF 比較', style: '你自己有做功課，習慣拿 ETF 和其他基金比較；討厭話術，喜歡數字和白紙黑字。' },
+    },
+    fcn: {
+      owner: { pain: '曾有投資重大虧損，深怕資產再縮水，對本金虧損和發行機構倒閉風險極度戒備', axis: '本金損失與信用風險的說明、資金配置比重', axisShort: '本金損失與信用風險' },
+      eng: { pain: '重視資金彈性與流動性，質疑提前出場吃虧、跌破要承接標的，習慣拿 ETF 和直接買股票比較', axis: '提前出場與承接標的的條件、與 ETF／直接買股票的差異比較', axisShort: '提前出場與承接條件', style: '你自己有做功課，習慣拿 ETF 和直接買股票比較；討厭話術，喜歡數字和白紙黑字。' },
+    },
+  };
+  const personaFor = (type, id) => { const b = persona(id); return { ...b, ...((PERSONA_BY_TYPE[type] || {})[b.id] || {}) }; };
+  // 常見異議和預設口頭禪裡，只有債券才會講的話（基金沒有發行機構倒閉、20 年期、提前買回；FCN 沒有 20 年期）
+  const BOND_ONLY = { fund: /發行機構|20\s*年|提前買回|直債/, fcn: /20\s*年/ };
+  const fitsType = (type, s) => !(BOND_ONLY[type] && BOND_ONLY[type].test(String(s)));
+  const objOf = (ctx) => OBJ[ctx.pr.id].filter((o) => fitsType(ctx.type, o[0]));
 
   // 把畫面上（或情境檔裡）的內容整理成固定的樣子：缺的補人設卡的預設、太長的截掉
   function normalize(raw) {
     raw = raw && typeof raw === 'object' ? raw : {};
     const type = TYPES[raw.type] ? raw.type : 'bond';
-    const pr = persona(raw.pid);
+    const pr = personaFor(type, raw.pid);
     const p0 = raw.p && typeof raw.p === 'object' ? raw.p : {};
     const p = {};
     FK.forEach((k) => { p[k] = k === 'risks' ? many(p0[k], 1200) : one(p0[k], k === 'name' ? 60 : 200); });
     if (!/^RR[1-5]$/.test(p.risk)) p.risk = '';
+    const used = new Set(fieldsOf(type).map(([k]) => k));
+    FK.forEach((k) => { if (!used.has(k)) p[k] = ''; }); // 這個類型用不到的欄位：清空，換過類型後留下來的舊內容才不會混進去
     const c0 = raw.c && typeof raw.c === 'object' ? raw.c : {};
     const age = Math.max(18, Math.min(95, parseInt(c0.age, 10) || parseInt(pr.age, 10)));
     const c = { name: one(c0.name, 12) || pr.name, age, job: one(c0.job, 30) || pr.job, asset: one(c0.asset, 40) || pr.asset };
@@ -204,13 +238,13 @@ const Arena = (() => {
   // 劇本情境大綱：三段，每段幾行字（確認時可以改）
   function buildOutline(ctx) {
     const { p, c, pr, ph, d, type } = ctx;
-    const prod = [`商品：【${TYPES[type]}】${p.name}`,
-      p.code && `商品代號 ISIN：${p.code}`, p.risk && `風險等級：${p.risk}`, p.issuer && `發行機構：${p.issuer}`, p.rating && `債券信用評等：${p.rating}`,
-      p.ccy && `計價幣別：${p.ccy}`, p.coupon && `收益亮點：票息／配息 ${p.coupon}`, p.tenor && `期間：到期／閉鎖 ${p.tenor}`, p.call && `提前贖回：${p.call}`, p.extra && `額外條件：${p.extra}`,
-      `必揭露風險：${riskList(ctx).join('；')}`].filter(Boolean);
+    // 商品那一段照這個類型的欄位列出來（基金不會出現「債券信用評等」「提前贖回」這些債券才有的項目）
+    const prod = [`商品：【${TYPES[type]}】${p.name}`]
+      .concat(fieldsOf(type).filter(([k]) => k !== 'name' && k !== 'risks' && p[k]).map(([k, label]) => `${label}：${p[k]}`))
+      .concat(`必揭露風險：${riskList(ctx).join('；')}`);
     const cust = [`客戶：「${c.name}」，${c.age}歲，${c.job}，${c.asset}`, `類型：${pr.title}`, `核心痛點：${pr.pain}`,
       ph.length && `口頭禪：${ph.map((s) => `「${s}」`).join('')}`, `刁難度：${DIFFS[d]}`, '情境：由理專主動來電／約訪，客戶被動且帶戒備'].filter(Boolean);
-    const ax = type === 'bond' ? '提前贖回與再投資風險是否講清楚' : type === 'fund' ? '配息可能來自本金是否講清楚' : '主要風險是否完整揭露';
+    const ax = type === 'fcn' ? '連結標的下跌時的承接與本金損失是否講清楚' : type === 'bond' ? '提前贖回與再投資風險是否講清楚' : type === 'fund' ? '配息可能來自本金是否講清楚' : '主要風險是否完整揭露';
     const atk = [`核心攻防：「${pr.axis}」`, `本次關鍵刁難：${ax}`, '理專須先同理、後探詢，再以白話說明商品與風險', '合規底線：不保證收益、不誇大保本、不以配息比定存、不建議借貸投資，成交前說明交易規則'];
     return { prod, cust, atk };
   }
@@ -229,6 +263,13 @@ const Arena = (() => {
     const { p, type } = ctx;
     const rs = riskList(ctx);
     const extra = p.extra ? `另外有一個額外條件要先說明：「${p.extra}」。` : '';
+    if (type === 'fcn') {
+      return {
+        mech: `我用白話講：FCN 是一種連結標的的結構型商品，發行機構是${v(p.issuer, '發行機構')}，連結的標的是「${v(p.under, '依商品說明書')}」。約定的配息是「${v(p.coupon, '依商品說明書')}」，天期是「${v(p.tenor, '依商品說明書')}」。${extra}重點是：配息是固定的，但本金不保本；到期能不能拿回全部本金，要看連結標的的價格和發行機構的信用。`,
+        p2c: '配息固定聽起來不錯，但如果連結的標的大跌，我到期會拿到什麼？會不會變成一堆股票？',
+        p2a: `這點一定要講清楚：到期時如果連結標的跌破約定的價格（履約價「${v(p.strike, '依商品說明書')}」${p.ki ? `、下限價「${p.ki}」` : ''}），您拿回來的可能不是現金，而是要用履約價承接表現最差的那一檔標的，這時候本金就會虧損，最壞可能損失全部本金。另外如果達到提前出場條件「${v(p.call, '依商品說明書')}」，商品會提前結束、拿回本金，之後要重新找標的。哪一種情況會發生我不能保證，所以請只用您能承擔這種結果的資金。`,
+      };
+    }
     if (type === 'bond') {
       return {
         mech: `我用白話講：就是您把錢借給${v(p.issuer, '發行機構')}，對方約定「${v(p.coupon, '依商品說明書')}」，期間是「${v(p.tenor, '依商品說明書')}」，到期再還本金。${extra}重點是，能不能如期付息還本，要看發行機構的信用。`,
@@ -253,17 +294,31 @@ const Arena = (() => {
   const fill = (ctx) => (s) => s.replace(/\{N\}/g, ctx.c.name).replace(/\{PT\}/g, v(ctx.p.name, '這檔商品')).replace(/\{ISS\}/g, v(ctx.p.issuer, '發行機構'))
     .replace(/\{RATING\}/g, v(ctx.p.rating, '依商品說明書')).replace(/\{CPN\}/g, v(ctx.p.coupon, '依商品說明書')).replace(/\{TEN\}/g, v(ctx.p.tenor, '依商品說明書'));
 
+  // 範本對話大多跟商品類型無關，少數幾句是照債券寫的：其他類型換一個說法
+  function linesOf(ctx) {
+    const D = { ...PD[ctx.pr.id] };
+    if (ctx.type !== 'bond' && ctx.pr.id === 'eng') {
+      D.open = D.open.replace('最近美債殖利率在高檔震盪，降息循環也剛啟動，有不少客戶在調整債券部位。', '最近市場在高檔震盪，降息循環也剛啟動，有不少客戶在重新調整配置。');
+    }
+    if (ctx.type === 'fund' && ctx.pr.id === 'owner') {
+      D.p1c = '那基金如果一直跌，我的錢不就越來越少？以前賠過，我很怕。';
+      D.p1a = '{N}您問到重點了。基金的淨值會跟著市場漲跌，本金確實可能虧損，所以這不是保本商品，也不是存款保險的標的，過去績效也不代表未來。所以我建議只拿您能承擔波動的那一部分資金，而且分散配置，不把雞蛋放在同一個籃子裡。';
+    }
+    return D;
+  }
+  const firstPain = (ctx) => (ctx.type === 'fund' && ctx.pr.id === 'owner' ? P1K_FUND_OWNER : P1K[ctx.pr.id]);
+
   // 超業範本對話：六輪。回傳一列一列：{ m: 1, s: 階段, l: 標題 } 是每一輪的標題，{ s, w: 'A' 超業 | 'C' 客戶, t: 內容 } 是一句話
   function buildChat(ctx) {
     const { p, pr, ph, d } = ctx;
-    const D = PD[pr.id];
+    const D = linesOf(ctx);
     const F = fill(ctx);
     const rs = riskList(ctx);
     const { mech, p2c, p2a } = typeLines(ctx);
     const wp = (t, i) => (ph[i] && !t.includes(ph[i]) ? `「${ph[i]}」……${t}` : t);
     const rows = [];
     let round = 0;
-    const add = (s, w, t) => rows.push({ s, w, t });
+    const add = (s, w, t) => rows.push({ s, w, t: clip(t, 900) }); // 和 cleanRows 一樣最多 900 字，存進去和讀回來才會一樣
     const start = (s) => { round += 1; rows.push({ m: 1, s, l: `【第 ${round} 輪｜${s}】` }); };
     start('同理破冰');
     add('同理破冰', 'A', F(D.open));
@@ -305,16 +360,16 @@ const Arena = (() => {
   // 三步驟填的東西 → App 的對練情境（欄位和長度限制照 server.py 的 sanitize_scenario）
   function toScenario(ctx, ol, rows) {
     const { p, c, pr, ph, d, type } = ctx;
-    const D = PD[pr.id];
+    const D = linesOf(ctx);
     const F = fill(ctx);
     const pname = v(p.name, '這檔商品');
     const risks = riskList(ctx);
-    const first = P1K[pr.id];
+    const first = firstPain(ctx);
     const second = P2K[type];
     const { p2c } = typeLines(ctx);
     const guard = d === 1 ? 0 : 1;
     const facts = [`【商品】${pname}（${TYPES[type]}）`]
-      .concat(FK.filter((k) => k !== 'name' && k !== 'risks' && p[k]).map((k) => `${FIELD_LABEL[k]}：${p[k]}`))
+      .concat(fieldsOf(type).filter(([k]) => k !== 'name' && k !== 'risks' && p[k]).map(([k, label]) => `${label}：${p[k]}`))
       .concat('【必揭露風險】', risks.map((r, i) => `${i + 1}. ${r}`)).join('\n');
     const attitude = { 1: '你態度友善，願意聽對方說明。', 2: '你半信半疑，對收益和風險會反覆確認。', 3: '你說話犀利、容易打斷對方，一聽到含糊的回答就反駁。' }[d];
     const personaText = `你是${c.name}，${c.age} 歲，${c.job}，${c.asset}。${pr.pain}。你的帳戶開在{公司}，{職稱簡稱}{業務稱呼}主動打電話來向你介紹「${pname}」。`
@@ -324,7 +379,7 @@ const Arena = (() => {
       '對方說明商品後，你會提出下面這些質疑，一次只問一個，不要一口氣講完：',
       `- ${F(D.p1c)}`, `- ${p2c}`,
       d === 3 ? '- 你們每個人都這樣講，賣東西當然說好聽，我怎麼信你？' : '',
-      `- 其他可能會問的：${OBJ[pr.id].slice(0, 3).map((o) => o[0]).join(' ')}`,
+      `- 其他可能會問的：${objOf(ctx).slice(0, 3).map((o) => o[0]).join(' ')}`,
       '做對時：業務先同理你、坦白講風險、不保證、回答具體，你會慢慢放心。',
       '做錯時：業務保證獲利、說不會賠、迴避問題、拿配息比定存，或催你今天決定，你會更不信任，直接說「你們都這樣講」。',
       `結尾：你不會當場決定，會說「${F(D.hes)}」`,
@@ -418,11 +473,16 @@ const Arena = (() => {
     if (!o.extra) { const lm = t.match(/閉鎖期[^\n\r]{0,24}/); if (lm) o.extra = lm[0].trim(); }
     if (!o.call) { const km = t.match(/[^\n\r。]{0,20}(?:有權|得)[^\n\r。]{0,12}提前(?:贖回|買回)[^\n\r。]{0,30}/); if (km) o.call = km[0].trim(); }
     if (!o.risks) { const rl = t.split(/\n/).filter((x) => /風險/.test(x) && x.length < 60).slice(0, 6).map((x) => x.trim()); if (rl.length) o.risks = rl.join('\n'); }
+    o.under = g(/(?:連結標的|標的資產|連結資產|連結股票)[：:]\s*([^\n\r]+)/);
+    o.strike = g(/(?:履約價|執行價|Strike)[^：:\n]{0,10}[：:]\s*([^\n\r]+)/i);
+    o.ki = g(/(?:下限價|敲入|Knock[- ]?in|KI)[^：:\n]{0,10}[：:]\s*([^\n\r]+)/i);
+    const ko = g(/(?:提前出場|自動提前|敲出|Knock[- ]?out|Autocall|KO)[^：:\n]{0,10}[：:]\s*([^\n\r]+)/i);
+    if (ko) o.call = ko;
     const stem = fname.replace(/\.[^.]+$/, '');
     if (!o.code) { const fi = stem.match(/[A-Z]{2}[A-Z0-9]{9}[0-9]/); if (fi) o.code = fi[0]; }
     if (!o.risk) { const fr = stem.match(/RR\s*([1-5])/i); if (fr) o.risk = `RR${fr[1]}`; }
     const head = stem + t.slice(0, 400);
-    o.type = /債|bond/i.test(head) && !/基金/.test(stem) ? 'bond' : /基金|fund/i.test(head) ? 'fund' : '';
+    o.type = /FCN|固定配息|Fixed Coupon|股權連結/i.test(head) ? 'fcn' : /債|bond/i.test(head) && !/基金/.test(stem) ? 'bond' : /基金|fund/i.test(head) ? 'fund' : '';
     if (!o.name && stem && (o.issuer || o.coupon || o.code || o.tenor)) o.name = stem;
     return o;
   }
@@ -450,13 +510,13 @@ const Arena = (() => {
   function sec1(ctx, ol, word) {
     const { p, c, pr } = ctx;
     const L = (x) => (x ? esc(x) : '—');
-    const info = tbl(['項目', '內容'], [
-      ['商品名稱', `<b>${esc(p.name)}</b>（${TYPES[ctx.type]}）`], ['商品代號 ISIN', L(p.code)], ['風險等級', red(L(p.risk), word)],
-      ['發行機構', L(p.issuer)], ['債券信用評等', L(p.rating)], ['計價幣別', L(p.ccy)], ['票息／配息條件', L(p.coupon)], ['到期／閉鎖期', L(p.tenor)],
-      ['提前贖回條件', L(p.call)], ['額外條件', L(p.extra)], ['必揭露風險', red(riskList(ctx).map(esc).join('<br>'), word)],
+    const prodRows = fieldsOf(ctx.type).filter(([k]) => k !== 'risks').map(([k, label]) => [label,
+      k === 'name' ? `<b>${esc(p.name)}</b>（${TYPES[ctx.type]}）` : k === 'risk' ? red(L(p.risk), word) : L(p[k])]);
+    const info = tbl(['項目', '內容'], prodRows.concat([
+      ['必揭露風險', red(riskList(ctx).map(esc).join('<br>'), word)],
       ['客戶人設', `<b>${esc(c.name)}</b>｜${esc(pr.title)}｜${esc(c.age)}歲｜${esc(c.job)}｜${esc(c.asset)}`],
       ['核心抗拒', esc(pr.pain)], ['刁難度', red(DIFFS[ctx.d], word)], ['製作窗口', esc([ctx.w.unit, ctx.w.name].filter(Boolean).join('／') || '—')],
-    ], { word, widths: [24, 76] });
+    ]), { word, widths: [24, 76] });
     const part = (t, a) => `<h4>【${t}】</h4>${ul(a.map(esc))}`;
     return info + part('商品核心規格與亮點重點', ol.prod) + part('客戶態樣背景與核心痛點', ol.cust) + part('本次對練核心攻防情境', ol.atk);
   }
@@ -471,20 +531,20 @@ const Arena = (() => {
 
   function sec3(ctx, word) {
     const { pr, type } = ctx;
-    const k1 = P1K[pr.id].k;
+    const k1 = firstPain(ctx).k;
     const k2 = P2K[type].k;
     const R = [
       ['第 1 輪｜同理破冰', '被推銷的戒備，帶出口頭禪與過往創傷', '主動破冰、掌握市場話題、說明來意並徵詢時間、先同理', '一開口就推商品、說「歡迎光臨」、話術像唸稿'],
       ['第 2 輪｜需求探詢', '不想被問太多，但需要被理解', '資金期間、波動承受度、過往經驗（KYC）', '不問需求就推薦'],
       ['第 3 輪｜白話說明', '聽不懂專有名詞、怕被唬弄', '白話比喻、收益條件、期間、額外條件、主動完整揭露必揭露風險', '連續講英文縮寫、只講優點、遺漏風險'],
-      [`第 4 輪｜痛點迎擊（一）：「${fill(ctx)(PD[pr.id].p1c)}」`, '核心恐懼被觸動', k1[0], k1[1]],
+      [`第 4 輪｜痛點迎擊（一）：「${fill(ctx)(linesOf(ctx).p1c)}」`, '核心恐懼被觸動', k1[0], k1[1]],
       ['第 5 輪｜痛點迎擊（二）', '對條款是否吃虧／風險是否被淡化的疑慮', k2[0], k2[1]],
       ['第 6 輪｜促成下一步', '猶豫、想回去想', '重述非存款／不保證收益、期間與閉鎖、申購方式與交付文件；不催促並約定下一步', '催促成交、保證、建議借貸投資、未說明交易規則'],
     ];
     const t1 = tbl(['輪次', '客戶質疑與心理', '超業應答得分要點（必提關鍵字）', '地雷扣分陷阱'],
       R.map((r) => [`<b>${esc(r[0])}</b>`, esc(r[1]), lst(r[2]), red(lst(r[3]), word)]), { word, widths: [25, 25, 25, 25] });
-    const O = OBJ[pr.id].map((o) => [esc(o[0]), esc(o[1]), lst(o[2]), red(lst(o[3]), word)]);
-    const extra = ctx.ph.filter((x) => !OBJ[pr.id].some((o) => o[0].includes(x))).slice(0, 2)
+    const O = objOf(ctx).map((o) => [esc(o[0]), esc(o[1]), lst(o[2]), red(lst(o[3]), word)]);
+    const extra = ctx.ph.filter((x) => !objOf(ctx).some((o) => o[0].includes(x))).slice(0, 2)
       .map((x) => [`「${esc(x)}」`, '客戶口頭禪背後的情緒', ul(['先同理，再以客觀資訊與風險揭露回應']), red(ul(['情緒性回嘴、保證性語言']), word)]);
     return `${t1}<h4>核心異議攻防（客戶常見異議）</h4>${tbl(['客戶異議', '背後心理', '得分要點', '地雷陷阱'], O.concat(extra), { word, widths: [25, 25, 25, 25] })}`;
   }
@@ -553,7 +613,7 @@ const Arena = (() => {
     return fromPlaybook(data.playbook);
   }
 
-  const logic = { TYPES, UNITS, FK, FIELD_LABEL, PH, PHRASES, DIFF_OPTS, PERSONAS, SECTIONS, normalize, riskList, buildOutline, cleanOutline, buildChat, cleanRows, toScenario, fromPlaybook, recipeKey, parseProduct, sec1, sec2, sec3, sec4, selfScore, docHtml, plainDocHtml, exportData, readExport };
+  const logic = { TYPES, UNITS, FK, FIELDS, fieldsOf, fitsType, personaFor, PH, PHRASES, DIFF_OPTS, PERSONAS, SECTIONS, normalize, riskList, buildOutline, cleanOutline, buildChat, cleanRows, toScenario, fromPlaybook, recipeKey, parseProduct, sec1, sec2, sec3, sec4, selfScore, docHtml, plainDocHtml, exportData, readExport };
 
   // ------------------------------------------------------------------ 畫面（以下只在瀏覽器裡跑）
 
@@ -569,7 +629,7 @@ const Arena = (() => {
     try { w = JSON.parse(localStorage.getItem(WINDOW_KEY) || '{}') || {}; } catch { /* 讀不到就空白 */ }
     const p = {};
     FK.forEach((k) => { p[k] = ''; });
-    return { type: 'bond', p, pid: '', av: '', c: { name: '', age: '', job: '', asset: '' }, ph: [], d: 2, w: { unit: w.unit || '', name: w.name || '' } };
+    return { type: Object.keys(TYPES)[0], p, pid: '', av: '', c: { name: '', age: '', job: '', asset: '' }, ph: [], d: 2, w: { unit: w.unit || '', name: w.name || '' } };
   }
 
   // ---- 檔案解析（.txt 直接讀；.docx 解壓縮後拿文字；.pdf 只抓得到簡單的文字層，中文 PDF 多半抓不到）
@@ -677,20 +737,14 @@ const Arena = (() => {
       `<button type="button" data-act="type" data-v="${k}" class="${r.type === k ? 'on' : ''}">${t}</button>`).join('')}</div></div>
       <label class="wz-upload" id="wzDrop"><b>把商品 DM 或規格檔拖到這裡，或點一下選檔</b><span>.docx、.txt、.pdf；會自動帶入下面的欄位</span>
         <input type="file" id="wzFile" accept=".txt,.pdf,.docx" hidden><span class="muted" id="wzFileInfo">還沒上傳；每個欄位都可以手動填、手動改。</span></label>
-      <div class="form-grid">
-        ${field('data-p', 'name', '商品名稱', r.p.name, { wide: true, max: 60, ph: ph.name, req: true })}
-        ${field('data-p', 'issuer', '發行機構', r.p.issuer, { ph: ph.issuer })}
-        ${field('data-p', 'code', '商品代號 ISIN', r.p.code, { ph: ph.code })}
-        ${field('data-p', 'ccy', '計價幣別', r.p.ccy, { ph: ph.ccy })}
-        <label class="field"><span>風險等級</span><select data-p="risk"><option value="">請選擇</option>${[1, 2, 3, 4, 5].map((n) => `<option${r.p.risk === `RR${n}` ? ' selected' : ''}>RR${n}</option>`).join('')}</select></label>
-        ${field('data-p', 'coupon', '票息／配息條件', r.p.coupon, { ph: ph.coupon })}
-        ${field('data-p', 'tenor', '到期／閉鎖期', r.p.tenor, { ph: ph.tenor })}
-        ${field('data-p', 'rating', '債券信用評等', r.p.rating, { ph: ph.rating })}
-        ${field('data-p', 'call', '提前贖回條件', r.p.call, { ph: ph.call })}
-        ${field('data-p', 'extra', '額外條件', r.p.extra, { wide: true, ph: ph.extra })}
-        <label class="field wide"><span>必揭露風險清單</span><textarea data-p="risks" rows="4" maxlength="1200" placeholder="${esc(ph.risks)}">${esc(r.p.risks)}</textarea>
-          <small class="muted">留空時，會套用這類商品通用的必揭露風險。</small></label>
-      </div>
+      <div class="form-grid">${fieldsOf(r.type).map(([k, label]) => {
+        if (k === 'risk') return `<label class="field"><span>${label}</span><select data-p="risk"><option value="">請選擇</option>${[1, 2, 3, 4, 5].map((n) => `<option${r.p.risk === `RR${n}` ? ' selected' : ''}>RR${n}</option>`).join('')}</select></label>`;
+        if (k === 'risks') {
+          return `<label class="field wide"><span>${label}</span><textarea data-p="risks" rows="4" maxlength="1200" placeholder="${esc(ph.risks || '')}">${esc(r.p.risks)}</textarea>
+          <small class="muted">留空時，會套用這類商品通用的必揭露風險。</small></label>`;
+        }
+        return field('data-p', k, label, r.p[k], { wide: k === 'name' || k === 'extra' || k === 'under', max: k === 'name' ? 60 : 200, ph: ph[k] || '', req: k === 'name' });
+      }).join('')}</div>
       <p class="wz-msg" id="wzMsg" role="alert"></p>
       <div class="form-foot">
         ${W.editId ? '' : '<button class="pill ghost" type="button" data-act="blank">改用空白表單（進階）</button>'}
@@ -702,7 +756,7 @@ const Arena = (() => {
     const r = W.raw;
     const pr = r.pid ? persona(r.pid) : null;
     const av = r.av || pr?.av || 'chen';
-    return `<div class="field"><span>客戶人設卡 <em class="wz-req">*</em></span><div class="wz-cards">${PERSONAS.map((p) =>
+    return `<div class="field"><span>客戶人設卡 <em class="wz-req">*</em></span><div class="wz-cards">${PERSONAS.map((p0) => personaFor(r.type, p0.id)).map((p) =>
       `<button type="button" class="wz-card${r.pid === p.id ? ' on' : ''}" data-act="persona" data-v="${p.id}" aria-pressed="${r.pid === p.id}">
         <span class="wz-card-av">${H.avatarSVG(p.av)}</span><span class="wz-card-main"><b>${esc(p.title)}</b><small>${esc(p.sub)}</small><span>${esc(p.pain)}</span></span></button>`).join('')}</div></div>
       <div class="form-grid">
@@ -713,7 +767,7 @@ const Arena = (() => {
         <div class="field wide"><span>頭像（決定通話時的性別和聲音）</span><div class="av-pick">${['chen', 'lin', 'wang'].map((a) =>
           `<button type="button" data-act="av" data-v="${a}" class="${av === a ? 'on' : ''}" aria-pressed="${av === a}">${H.avatarSVG(a)}</button>`).join('')}<span class="muted">${av === 'chen' ? '男' : '女'}</span></div></div>
       </div>
-      <div class="field"><span>口頭禪（可複選，客戶會在對話裡講出來）</span><div class="wz-tags">${W.phrases.map((t) =>
+      <div class="field"><span>口頭禪（可複選，客戶會在對話裡講出來）</span><div class="wz-tags">${W.phrases.filter((t) => fitsType(r.type, t) || r.ph.includes(t)).map((t) =>
         `<button type="button" class="wz-tag${r.ph.includes(t) ? ' on' : ''}" data-act="phrase" data-v="${esc(t)}" aria-pressed="${r.ph.includes(t)}">「${esc(t)}」</button>`).join('')}</div>
         <input type="text" id="wzNewPhrase" maxlength="40" placeholder="輸入自己的口頭禪，按 Enter 新增" autocomplete="off"></div>
       <div class="field"><span>刁難度 <em class="wz-req">*</em></span><div class="wz-diff">${DIFF_OPTS.map(([n, t, s]) =>
@@ -845,7 +899,14 @@ const Arena = (() => {
     if (act === 'next') { goStep(W.step + 1); return; }
     if (act === 'prev') { goStep(W.step - 1); return; }
     if (act === 'blank') { if (!W.dirty || window.confirm('要放棄這裡填的內容，改用空白表單嗎？')) { W.dirty = false; H.openEditor(''); } return; }
-    if (act === 'type') { readForm(); r.type = b.dataset.v; W.dirty = true; render(); return; }
+    if (act === 'type') {
+      readForm();
+      r.type = b.dataset.v;
+      r.ph = r.ph.filter((t) => fitsType(r.type, t) || !PHRASES.includes(t)); // 預設口頭禪裡這個類型講不通的（例如基金的「20年期太長」）：取消勾選；自己加的留著
+      W.dirty = true;
+      render();
+      return;
+    }
     if (act === 'persona') {
       readForm();
       const pr = persona(b.dataset.v);

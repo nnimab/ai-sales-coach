@@ -351,6 +351,16 @@ test('Word 文件：四個章節都在，使用者填的字有跳脫', () => {
   assert.ok(plain.includes('情境&lt;x&gt;') && plain.includes('沒有超業範本'));
 });
 
+test('下載的 Word 檔名：Role play腳本_[標的]_[客戶態樣]_[日期]', () => {
+  const day = new Date(2026, 10, 5); // 使用者電腦的 2026/11/5
+  assert.equal(Arena.wordName('00985B', '精明上班族', day), 'Role play腳本_00985B_精明上班族_20261105.doc');
+  // 底線只當分隔：名稱裡的底線、空白和不能當檔名的字換成一個空白
+  assert.equal(Arena.wordName(' 高盛 20 年期_步階票息/美元債? ', '保守賠過錢企業主', day), 'Role play腳本_高盛 20 年期 步階票息 美元債_保守賠過錢企業主_20261105.doc');
+  assert.equal(Arena.wordName('', null, day), 'Role play腳本_商品_客戶_20261105.doc');
+  assert.equal(Arena.wordName('長'.repeat(80), '態'.repeat(40), day), `Role play腳本_${'長'.repeat(60)}_${'態'.repeat(20)}_20261105.doc`);
+  assert.match(Arena.wordName('A', 'B'), /^Role play腳本_A_B_\d{8}\.doc$/);
+});
+
 let failed = 0;
 for (const [name, fn] of tests) {
   try { fn(); console.log(`ok - ${name}`); } catch (e) { failed += 1; console.log(`not ok - ${name}\n${e.stack || e}`); }

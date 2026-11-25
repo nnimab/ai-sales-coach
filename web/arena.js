@@ -733,6 +733,48 @@ const Arena = (() => {
     return wordPage('Role Play', body);
   }
 
+  // 選了商品範本的情境：對練背景（客戶＋範本的商品資料）、AI 寫的超業範本對話、範本的建議回應和不能說的話、評分指標。
+  // tpl 是那份範本（讀不到就是 null，商品那幾段就不放）
+  function scenarioDocHtml(sc, tpl, date) {
+    const cu = sc.customer || {};
+    const L = (x) => (x || x === 0 ? esc(x) : '—');
+    const lines = (s) => String(s || '').split('\n').map((x) => x.trim()).filter(Boolean);
+    const W2 = { word: true, widths: [24, 76] };
+    const p = tpl?.p || {};
+    const type = TYPES[tpl?.type] ? tpl.type : 'custom';
+    const ok = tpl?.review?.status === 'approved';
+    const day = (iso) => { const d = new Date(iso); return Number.isNaN(d.getTime()) ? '' : d.toLocaleDateString('zh-TW'); };
+    const product = tpl ? tbl(['項目', '內容'], fieldsOf(type).filter(([k]) => k !== 'risks' && (k === 'name' || p[k])).map(([k, label]) => [label,
+      k === 'name' ? `<b>${esc(p.name)}</b>（${TYPES[type]}）` : k === 'risk' ? red(esc(p.risk), true) : esc(p[k])])
+      .concat([['必揭露風險', red(lines(p.risks).map(esc).join('<br>') || '—', true)]]), W2) : '';
+    const customer = tbl(['項目', '內容'], [
+      ['情境', `<b>${L(sc.title)}</b>`], ['客戶', `<b>${L(cu.name)}</b>｜${L(cu.age)} 歲｜${L(cu.job)}`], ['客戶背景', L(cu.summary)],
+      ['難度', L(sc.difficulty)], ['通話方向', sc.call_direction === 'outgoing' ? '由業務撥出' : '客戶來電'], ['建議時間', `${L(sc.duration_min)} 分鐘`],
+      ['客戶第一句話', L(sc.opening_line)], ['本次任務', L(sc.learner_task)],
+    ], W2);
+    // 範本對話：換階段時插一列標題
+    const rows = [];
+    let round = 0;
+    let stage = null;
+    (sc.script || []).forEach((r) => {
+      if (r.s && r.s !== stage) { round += 1; rows.push({ span: esc(`【第 ${round} 輪｜${r.s}】`) }); }
+      if (r.s) stage = r.s;
+      rows.push([r.w === 'A' ? '<b>業務</b>' : `客戶（${esc(cu.name || '')}）`, esc(r.t)]);
+    });
+    const script = rows.length ? tbl(['發話角色', '對話內容'], rows, { word: true, widths: [20, 80] }) : '<p>（這個情境還沒有範本對話，可以到情境設定按「AI 寫範本對話」。）</p>';
+    const checks = tbl(['檢核項目', '提示'], (sc.checklist || []).map((c) => [esc(c.label), L(c.hint)]), { word: true, widths: [34, 66] });
+    const qa = tpl?.qa?.length ? `<p><b>客戶常見的質疑和建議回應</b></p>${tbl(['客戶的質疑', '建議回應'], tpl.qa.map((x) => [esc(x.q), esc(x.a)]), { word: true, widths: [34, 66] })}` : '';
+    const donts = tpl?.donts?.length ? `<p><b>這檔商品不能說的話</b></p>${ul(tpl.donts.map((x) => red(esc(x), true)))}` : '';
+    const points = tpl?.points?.length ? `<p><b>白話重點</b></p>${ul(tpl.points.map(esc))}` : '';
+    const rubric = tbl(['面向', '評分項目', '滿分'], ITEMS.map((it) => [it[0] ? `<b>${it[0]}</b>` : '', it[1], String(it[2])]), { word: true, widths: [24, 56, 20] });
+    const review = !tpl ? '' : `　商品範本：${esc(p.name || '')}（${ok ? `已審核：${esc(tpl.review.by || '')} ${esc(day(tpl.review.at))}` : '未審核'}）`;
+    const body = `<h1 style="color:#1B4F7F">AI 業務擂台｜Role Play 劇本與超業範本</h1><p>日期：${esc(date || '')}${review}</p>`
+      + h2(SECTIONS[0][1]) + product + points + customer + h2(SECTIONS[1][1]) + script
+      + h2(SECTIONS[2][1]) + checks + qa + donts + h2('四、100 分制評分指標') + rubric
+      + (tpl && !ok ? '<p>※ 這份文件用的商品範本還沒有經過公司審核。</p>' : '');
+    return wordPage('Role Play', body);
+  }
+
   // 沒有劇本的情境（內建的、用進階編輯寫的）：只有公開的內容，沒有超業範本
   function plainDocHtml(sc, date) {
     const cu = sc.customer || {};
@@ -766,7 +808,7 @@ const Arena = (() => {
     return fromPlaybook(data.playbook);
   }
 
-  const logic = { TYPES, UNITS, FK, FIELDS, fieldsOf, fitsType, personaFor, PH, PHRASES, DIFF_OPTS, PERSONAS, SECTIONS, normalize, riskList, buildOutline, cleanOutline, buildChat, cleanRows, toScenario, fromPlaybook, recipeKey, parseProduct, fixCjk, nameFromFile, applyType, pickText, ruleText, cleanAi, aiProducts, productTarget, mergeProduct, sec1, sec2, sec3, sec4, selfScore, docHtml, plainDocHtml, wordName, exportData, readExport };
+  const logic = { TYPES, UNITS, FK, FIELDS, fieldsOf, fitsType, personaFor, PH, PHRASES, DIFF_OPTS, PERSONAS, SECTIONS, normalize, riskList, buildOutline, cleanOutline, buildChat, cleanRows, toScenario, fromPlaybook, recipeKey, parseProduct, fixCjk, nameFromFile, applyType, pickText, ruleText, cleanAi, aiProducts, productTarget, mergeProduct, sec1, sec2, sec3, sec4, selfScore, docHtml, plainDocHtml, scenarioDocHtml, wordName, exportData, readExport };
 
   // ------------------------------------------------------------------ 畫面（以下只在瀏覽器裡跑）
 
@@ -1473,6 +1515,13 @@ const Arena = (() => {
         saveWord(ctx.p.name, ctx.pr.title, docHtml(ctx, ol, rows, today()));
       } else {
         const pub = H.scenario(id) || sc; // 首頁那份已經把「業務稱呼」這些代稱換成實際的字
+        if (pub.template_id || pub.script?.length) {
+          // 選了商品範本的情境：把範本的內容一起放進去；檔名的「客戶態樣」用情境的標題（例如「賠過本金的客戶開口要保本」）
+          let tpl = null;
+          if (pub.template_id) { try { tpl = (await H.api('/api/template/get', { id: pub.template_id })).template; } catch { /* 範本被刪了：只放情境的內容 */ } }
+          saveWord(tpl?.p?.name || pub.product, pub.title, scenarioDocHtml(pub, tpl, today()));
+          return;
+        }
         saveWord(pub.product, pub.customer?.name, plainDocHtml(pub, today())); // 不是三步驟做的：沒有客戶態樣，用客戶的名字
       }
     } catch (err) {

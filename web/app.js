@@ -946,6 +946,7 @@ function renderHome() {
         <span>${icon(outgoing ? 'phoneOut' : 'phoneIn')}${outgoing ? '由你撥出' : '客戶來電'}</span>
         <span>${icon('clock')}${esc(s.duration_min)} 分鐘</span>
         <span>${diffDots(s.difficulty_level || 2)}${esc(s.difficulty)}</span>
+        ${s.template?.status === 'draft' ? '<span class="tag amber" title="這個情境用的商品範本，公司還沒審核">範本未審核</span>' : ''}
       </div>
     </article>`;
   }).join('');
@@ -1802,9 +1803,10 @@ const ScenarioAdmin = (() => {
 
   // ---- 情境清單
 
-  function renderList() {
+  async function renderList() {
     setTab(tab);
-    return Promise.all([renderTemplates(), renderScenarios()]);
+    await renderTemplates(); // 先有範本清單，情境那一頁才標得出每個情境用的是哪一份
+    await renderScenarios();
   }
 
   async function renderScenarios() {
@@ -1827,10 +1829,13 @@ const ScenarioAdmin = (() => {
       acts.push('<button class="pill sm ghost" type="button" data-act="copy">複製</button>');
       if (s.source === 'custom') acts.push('<button class="pill sm ghost" type="button" data-act="delete">刪除</button>');
       if (s.source === 'modified') acts.push('<button class="pill sm ghost" type="button" data-act="restore">還原預設</button>');
+      // 這個情境要賣的東西選的是哪一份商品範本（沒選就不標）
+      const tpl = s.template_id ? templates.find((t) => t.id === s.template_id) : null;
+      const tplTag = !s.template_id ? '' : !tpl ? '<span class="tag red">範本已刪除</span>' : tpl.review?.status === 'approved' ? '' : '<span class="tag amber">範本未審核</span>';
       return `<div class="list-row" role="button" tabindex="0" data-id="${esc(s.id)}">
         <div class="av">${avatarSVG(s.avatar)}</div>
-        <div class="list-main"><b>${esc(s.name)} · ${esc(s.title)}</b></div>
-        ${s.playbook ? '<span class="tag green">有劇本</span>' : ''}<span class="tag">${esc(SOURCE_TAG[s.source] || '')}</span>
+        <div class="list-main"><b>${esc(s.name)} · ${esc(s.title)}</b>${tpl ? `<span>商品範本：${esc(tpl.name)}</span>` : ''}</div>
+        ${tplTag}${s.playbook || s.script ? '<span class="tag green">有劇本</span>' : ''}<span class="tag">${esc(SOURCE_TAG[s.source] || '')}</span>
         <div class="row-acts">${acts.join('')}</div>
       </div>`;
     }).join('');
@@ -1896,9 +1901,11 @@ const ScenarioAdmin = (() => {
       toast(esc(err.message), 'error', 6000, '打不開這個情境');
       return;
     }
+    try { templates = (await api('/api/template/list', {})).templates || []; } catch { /* 讀不到範本：照舊可以不選範本自己寫 */ }
     if (myGen !== gen) return;
     delete sc.hidden;
     delete sc.source;
+    delete sc.template; // 首頁用的標籤，不是情境的內容
     if (copy) sc.title = `${String(sc.title || '').slice(0, 26)}（複本）`;
     draft = sc;
     hiddenLen = lens;
@@ -1906,6 +1913,9 @@ const ScenarioAdmin = (() => {
     copyFrom = id && copy ? id : '';
     dirty = false;
     $('#aiDesc').value = '';
+    fillTemplateSelect(sc.template_id || '');
+    setLevel(sc.difficulty_level || 2);
+    hideIdeas();
     $('#editorTitle').textContent = editingId ? '修改情境' : copyFrom ? '複製情境' : '新增情境';
     renderForm(sc, { openHidden: !id });
     show('editor');
@@ -1946,6 +1956,53 @@ const ScenarioAdmin = (() => {
       <span class="muted">頭像決定性別和聲音；同一個頭像的客戶共用同一個聲音。</span></div>`;
   }
 
+  // ---- 要賣什麼：選一份商品範本。選了之後，對練時的商品資料和教練的標準都用範本的內容
+  const RUBRIC_OF = { fcn: 'general', bond: 'bond', fund: 'fund', custom: 'general' };
+  const pickedTemplate = () => templates.find((t) => t.id === $('#edTemplate').value) || null;
+
+  function fillTemplateSelect(current) {
+    const opts = [['', '不選（商品資料自己寫）']].concat(templates.map((t) => [t.id, t.name + (t.review?.status === 'approved' ? '' : '（未審核）')]));
+    if (current && !templates.some((t) => t.id === current)) opts.push([current, '（原本選的範本已經被刪除）']);
+    $('#edTemplate').innerHTML = opts.map(([v, label]) => `<option value="${esc(v)}"${v === current ? ' selected' : ''}>${esc(label)}</option>`).join('');
+    templateNote();
+  }
+
+  function templateNote() {
+    const id = $('#edTemplate').value;
+    const t = pickedTemplate();
+    $('#edTemplateNote').textContent = !id ? (templates.length ? '' : '還沒有商品範本。先到「商品範本」那一頁新增一份，AI 才知道要賣什麼。')
+      : !t ? '原本選的範本已經被刪除，對練時會用這個情境自己存的商品資料。'
+        : t.review?.status === 'approved' ? '對練時，商品資料和教練的標準會用這份範本的內容。'
+          : '對練時，商品資料和教練的標準會用這份範本的內容。這份範本還沒審核，首頁會標「範本未審核」。';
+    $('#btnAiIdeas').disabled = !t;
+  }
+
+  const setLevel = (n) => $$('#aiLevel button').forEach((b) => b.classList.toggle('on', Number(b.dataset.v) === Number(n)));
+  const pickedLevel = () => Number($('#aiLevel button.on')?.dataset.v) || 2;
+
+  let ideas = [];
+  function hideIdeas() {
+    ideas = [];
+    $('#aiIdeas').hidden = true;
+    $('#aiIdeas').innerHTML = '';
+  }
+
+  // ---- 超業範本對話：給人看的示範（下載 Word 會放進去）。AI 依商品範本和這位客戶寫，一句一句可以改
+  const STAGES = ['同理破冰', '需求探詢', '白話說明', '痛點迎擊', '促成下一步'];
+  const SCRIPT_MAX = 40;
+
+  function scriptRow(r) {
+    return `<div class="edit-item script-item">
+      <select class="sc-who" aria-label="這一句是誰說的"><option value="A"${r.w === 'A' ? ' selected' : ''}>業務</option><option value="C"${r.w === 'A' ? '' : ' selected'}>客戶</option></select>
+      <select class="sc-stage" aria-label="階段"><option value="">階段</option>${STAGES.map((s) => `<option${r.s === s ? ' selected' : ''}>${s}</option>`).join('')}</select>
+      <textarea class="sc-text" rows="2" maxlength="400" placeholder="這一句說什麼" aria-label="對話內容">${esc(r.t || '')}</textarea>
+      <button class="icon-btn" type="button" data-del aria-label="刪除這一句">${icon('x')}</button>
+    </div>`;
+  }
+
+  const collectScript = () => $$('[data-list="script"] .script-item', form())
+    .map((row) => ({ s: $('.sc-stage', row).value, w: $('.sc-who', row).value, t: $('.sc-text', row).value.trim() })).filter((r) => r.t);
+
   function checkRow(c, i) {
     return `<div class="edit-item" data-id="${esc(c.id || '')}">
       <input class="ed-label"${attrs({ type: 'text', 'data-k': `checklist.${i}.label`, maxlength: 20, value: c.label || '', placeholder: '要問到或做到的事', 'aria-label': '檢核項目' })}>
@@ -1967,7 +2024,8 @@ const ScenarioAdmin = (() => {
     const so = sc.server_only || {};
     const hidden = HIDDEN.map(([k, label, max, rows, example]) => {
       const n = hiddenLen[k] || 0;
-      const ph = n && !so[k] ? `已設定 ${n} 字（學員看不到，這裡也不顯示）。要修改請整段重寫；留空就保留原本內容。` : example;
+      const ph = k === 'product_facts' && sc.template_id ? '有選商品範本：對練時用範本的商品資料，這裡不用填。'
+        : n && !so[k] ? `已設定 ${n} 字（學員看不到，這裡也不顯示）。要修改請整段重寫；留空就保留原本內容。` : example;
       return area(`server_only.${k}`, label, so[k] || '', max, rows, { ph, chips: k === 'persona' });
     }).join('');
     const trust = Number.isFinite(Number(sc.initial_trust)) ? Number(sc.initial_trust) : 45;
@@ -2015,7 +2073,14 @@ const ScenarioAdmin = (() => {
       <div class="ph-chips" data-for="demo_lines">
         <button class="pill sm ghost edit-add" type="button" data-add="demo_lines">${icon('plus')}新增示範句</button>
         ${TOKENS.map((t) => `<button class="pill sm ghost" type="button" data-tok="{${esc(t)}}" title="${esc(`通話時會換成「${phValue(t)}」`)}">{${esc(t)}}</button>`).join('')}
-      </div>`;
+      </div>
+
+      <h2 class="sec-title">超業範本對話</h2>
+      <p class="muted form-note">給人看的示範，下載 Word 會放進去。AI 依商品範本和這位客戶來寫，寫好可以一句一句改。</p>
+      <div class="script-ai"><span class="muted" id="scriptNote">${(sc.script || []).length ? `現在有 ${sc.script.length} 句。` : '還沒有範本對話。'}</span>
+        <button class="pill sm" type="button" id="btnAiScript">${(sc.script || []).length ? '請 AI 重寫對話' : 'AI 寫範本對話'}</button></div>
+      <div class="edit-list" data-list="script">${(sc.script || []).map(scriptRow).join('')}</div>
+      <button class="pill sm ghost edit-add" type="button" data-add="script">${icon('plus')}新增一句</button>`;
     lastDemo = null;
     form().querySelectorAll('[data-k]').forEach(checkTokens);
   }
@@ -2058,9 +2123,13 @@ const ScenarioAdmin = (() => {
   function addRow(kind) {
     const list = form().querySelector(`[data-list="${kind}"]`);
     const n = $$('.edit-item', list).length;
-    if (n >= 10) { toast('最多 10 項', 'warn', 2500); return; }
-    list.insertAdjacentHTML('beforeend', kind === 'checklist' ? checkRow({}, n) : demoRow('', n));
-    list.lastElementChild.querySelector('input').focus();
+    const max = kind === 'script' ? SCRIPT_MAX : 10;
+    if (n >= max) { toast(`最多 ${max} ${kind === 'script' ? '句' : '項'}`, 'warn', 2500); return; }
+    // 範本對話新增一句：業務和客戶輪流，階段沿用上一句的
+    const last = kind === 'script' ? list.lastElementChild : null;
+    const next = { w: last && $('.sc-who', last).value === 'A' ? 'C' : 'A', s: last ? $('.sc-stage', last).value : '', t: '' };
+    list.insertAdjacentHTML('beforeend', kind === 'checklist' ? checkRow({}, n) : kind === 'script' ? scriptRow(next) : demoRow('', n));
+    list.lastElementChild.querySelector('input, textarea').focus();
     dirty = true;
   }
 
@@ -2100,6 +2169,9 @@ const ScenarioAdmin = (() => {
       rowMap.demo_lines.push(i);
       sc.demo_lines.push(line);
     });
+    sc.template_id = $('#edTemplate').value; // 空字串就是不連範本
+    sc.script = collectScript();
+    delete sc.template;
     return sc;
   }
 
@@ -2153,8 +2225,10 @@ const ScenarioAdmin = (() => {
 
   async function aiDraft() {
     const desc = $('#aiDesc').value.trim();
-    if (desc.length < 10) {
-      toast('請用一段話描述客戶和狀況（至少 10 個字）', 'warn', 3500);
+    const tpl = pickedTemplate();
+    // 有選商品範本：描述可以整個不寫，AI 自己想一位適合這檔商品的客戶
+    if (desc.length < 10 && !(tpl && !desc)) {
+      toast(tpl ? '描述請寫完整一點（至少 10 個字），或整個留空讓 AI 自己想一位客戶' : '請用一段話描述客戶和狀況（至少 10 個字）', 'warn', 4000);
       $('#aiDesc').focus();
       return;
     }
@@ -2165,14 +2239,16 @@ const ScenarioAdmin = (() => {
     btn.disabled = true;
     btn.textContent = 'AI 撰寫中…';
     note.textContent = state.providerLabel.startsWith('本機') ? '本機模型大約要 30～90 秒' : '大約要 5～20 秒';
+    let ok = false;
     try {
-      const d = await api('/api/editor/draft', { description: desc });
+      const d = await api('/api/editor/draft', tpl ? { description: desc, template_id: tpl.id, difficulty_level: pickedLevel() } : { description: desc });
       if (myGen !== gen || !$('#view-editor').classList.contains('active')) return; // 已經離開編輯器
       draft = d.scenario || blankScenario();
       delete draft.hidden;
       delete draft.source;
       renderForm(draft, { openHidden: true });
       dirty = true;
+      ok = true;
       const warn = (d.warnings || []).filter(Boolean);
       toast(`由 ${esc(d.model || 'AI')} 撰寫，請檢查後再儲存${warn.length ? `<br>${warn.map(esc).join('<br>')}` : ''}`, 'info', 6000, 'AI 已填好');
     } catch (err) {
@@ -2181,6 +2257,66 @@ const ScenarioAdmin = (() => {
       btn.disabled = false;
       btn.textContent = '用 AI 幫我寫';
       note.textContent = 'AI 會把整個情境填好，你再修改。';
+    }
+    if (ok && tpl && myGen === gen) aiScript(true); // 情境寫好了，接著寫超業範本對話（要有範本才知道商品的標準答案）
+  }
+
+  // 請 AI 依商品範本和這位客戶寫超業範本對話。auto：剛寫完情境自動接著寫，不用問
+  let scriptBusy = false;
+  async function aiScript(auto = false) {
+    if (scriptBusy || !draft) return;
+    if (!pickedTemplate()) {
+      toast('要先在最上面選一份商品範本，AI 才知道這檔商品該怎麼講', 'warn', 4500);
+      $('#edTemplate').focus();
+      return;
+    }
+    if (!auto && collectScript().length && !window.confirm('AI 會重寫整份範本對話，現在的內容會被換掉。要繼續嗎？')) return;
+    const myGen = gen;
+    const here = () => myGen === gen && $('#view-editor').classList.contains('active');
+    const setNote = (t) => { const n = $('#scriptNote'); if (n) n.textContent = t; };
+    scriptBusy = true;
+    $('#btnAiScript').disabled = true;
+    $('#btnAiScript').textContent = 'AI 撰寫中…';
+    setNote('AI 正在依商品範本和這位客戶寫示範對話（大約 10～30 秒）…');
+    try {
+      const d = await api('/api/editor/script', { id: editingId || copyFrom, scenario: collect() });
+      if (!here()) return;
+      draft.script = d.script || [];
+      const list = form().querySelector('[data-list="script"]');
+      if (list) list.innerHTML = draft.script.map(scriptRow).join('');
+      dirty = true;
+      setNote(`AI 寫好了 ${draft.script.length} 句，請核對後修改。`);
+    } catch (err) {
+      if (!here()) return;
+      setNote(`AI 這次沒寫出來：${err.message}`);
+      if (!auto) toast(esc(err.message), 'error', 7000, 'AI 沒有寫好');
+    } finally {
+      scriptBusy = false;
+      const b = $('#btnAiScript');
+      if (b) { b.disabled = false; b.textContent = collectScript().length ? '請 AI 重寫對話' : 'AI 寫範本對話'; }
+    }
+  }
+
+  // 「幫我想 3 位客戶」：AI 依這檔商品提幾位不同類型的客戶；點一位，就用那一位請 AI 寫出整個情境
+  async function aiIdeas() {
+    const tpl = pickedTemplate();
+    if (!tpl) { toast('請先選一份商品範本', 'warn', 3500); return; }
+    const myGen = gen;
+    const btn = $('#btnAiIdeas');
+    btn.disabled = true;
+    btn.textContent = 'AI 思考中…';
+    try {
+      const d = await api('/api/editor/ideas', { template_id: tpl.id });
+      if (myGen !== gen) return;
+      ideas = d.ideas || [];
+      $('#aiIdeas').innerHTML = ideas.map((x, i) => `<button type="button" class="idea" data-i="${i}">
+        <b>${esc(x.label)}</b><span class="tag">${esc((DIFF.find(([n]) => n === x.difficulty_level) || DIFF[1])[1])}</span><span>${esc(x.desc)}</span></button>`).join('');
+      $('#aiIdeas').hidden = !ideas.length;
+    } catch (err) {
+      if (myGen === gen) toast(esc(err.message), 'error', 6000, 'AI 沒有想出來');
+    } finally {
+      btn.textContent = '幫我想 3 位客戶';
+      btn.disabled = !pickedTemplate();
     }
   }
 
@@ -2194,6 +2330,7 @@ const ScenarioAdmin = (() => {
     lastDemo = null;
     form().innerHTML = '';
     $('#aiDesc').value = '';
+    hideIdeas();
   }
 
   // ---- 事件（表單內容每次重畫，所以綁在外層）
@@ -2230,6 +2367,7 @@ const ScenarioAdmin = (() => {
       return;
     }
     if (b.dataset.add) { addRow(b.dataset.add); return; }
+    if (b.id === 'btnAiScript') { aiScript(); return; }
     if (b.hasAttribute('data-del')) {
       const list = b.closest('.edit-list');
       b.closest('.edit-item').remove();
@@ -2254,7 +2392,32 @@ const ScenarioAdmin = (() => {
     e.preventDefault();
     setTab(tab === 'templates' ? 'scenarios' : 'templates', true);
   });
-  $('#btnNewScenario').addEventListener('click', () => Arena.open()); // 三步驟；裡面可以改用這裡的空白表單（進階）
+  $('#btnNewScenario').addEventListener('click', () => open('')); // 選商品範本、描述客戶，AI 填好再改
+  $('#edTemplate').addEventListener('change', () => {
+    if (!draft) return;
+    const t = pickedTemplate();
+    draft.template_id = t ? t.id : '';
+    if (t) { // 商品名稱和產品面的評分標準跟著範本
+      const p = form().querySelector('[data-k="product"]');
+      if (p) p.value = t.name.slice(0, 30);
+      const seg = form().querySelector('[data-k="rubric_type"]');
+      if (seg) $$('button', seg).forEach((x) => x.classList.toggle('on', x.dataset.v === (RUBRIC_OF[t.type] || 'general')));
+    }
+    const facts = form().querySelector('[data-k="server_only.product_facts"]');
+    if (facts && t) facts.placeholder = '有選商品範本：對練時用範本的商品資料，這裡不用填。';
+    dirty = true;
+    templateNote();
+    hideIdeas();
+  });
+  $('#aiLevel').addEventListener('click', (e) => { const b = e.target.closest('button'); if (b) setLevel(b.dataset.v); });
+  $('#btnAiIdeas').addEventListener('click', aiIdeas);
+  $('#aiIdeas').addEventListener('click', (e) => {
+    const x = ideas[Number(e.target.closest('.idea')?.dataset.i)];
+    if (!x) return;
+    $('#aiDesc').value = `${x.label}：${x.desc}`;
+    setLevel(x.difficulty_level);
+    aiDraft();
+  });
   $('#btnImportScenario').addEventListener('click', () => $('#importScenarioFile').click());
   $('#importScenarioFile').addEventListener('change', async (e) => {
     const file = e.target.files[0];

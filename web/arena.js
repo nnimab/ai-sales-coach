@@ -751,8 +751,13 @@ const Arena = (() => {
     return wordPage('對練情境', body);
   }
 
+  // 下載的 Word 檔名：Role play腳本_[標的]_[客戶態樣]_[日期].doc。底線只當分隔，所以名稱裡的底線和不能當檔名的字換成空白；日期用使用者電腦當天的 20261125
+  const filePart = (s, n) => String(s || '').replace(/[\\/:*?"<>|_\s]+/g, ' ').trim().slice(0, n).trim();
+  const dayStamp = (d) => `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
+  const wordName = (product, persona, when) => `Role play腳本_${filePart(product, 60) || '商品'}_${filePart(persona, 20) || '客戶'}_${dayStamp(when || new Date())}.doc`;
+
   const FILE_KIND = 'ai-arena-scenario';
-  const exportData = (pb, title, when) => ({ kind: FILE_KIND, v: 1, exported_at: when || '', title: String(title || ''), playbook: pb });
+  const exportData =(pb, title, when) => ({ kind: FILE_KIND, v: 1, exported_at: when || '', title: String(title || ''), playbook: pb });
   function readExport(data) {
     if (!data || typeof data !== 'object' || data.kind !== FILE_KIND) throw new Error('這不是 AI 業務擂台的情境檔');
     if (data.v !== 1) throw new Error('這個情境檔的版本比較新，這一版讀不了');
@@ -761,7 +766,7 @@ const Arena = (() => {
     return fromPlaybook(data.playbook);
   }
 
-  const logic = { TYPES, UNITS, FK, FIELDS, fieldsOf, fitsType, personaFor, PH, PHRASES, DIFF_OPTS, PERSONAS, SECTIONS, normalize, riskList, buildOutline, cleanOutline, buildChat, cleanRows, toScenario, fromPlaybook, recipeKey, parseProduct, fixCjk, nameFromFile, applyType, pickText, ruleText, cleanAi, aiProducts, productTarget, mergeProduct, sec1, sec2, sec3, sec4, selfScore, docHtml, plainDocHtml, exportData, readExport };
+  const logic = { TYPES, UNITS, FK, FIELDS, fieldsOf, fitsType, personaFor, PH, PHRASES, DIFF_OPTS, PERSONAS, SECTIONS, normalize, riskList, buildOutline, cleanOutline, buildChat, cleanRows, toScenario, fromPlaybook, recipeKey, parseProduct, fixCjk, nameFromFile, applyType, pickText, ruleText, cleanAi, aiProducts, productTarget, mergeProduct, sec1, sec2, sec3, sec4, selfScore, docHtml, plainDocHtml, wordName, exportData, readExport };
 
   // ------------------------------------------------------------------ 畫面（以下只在瀏覽器裡跑）
 
@@ -1164,7 +1169,7 @@ const Arena = (() => {
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
   }
   const safeName = (s) => String(s || '').replace(/[\\/:*?"<>|\s]+/g, '_').slice(0, 30) || '情境';
-  const saveWord = (name, html) => download(`RolePlay劇本_${safeName(name)}_${stamp()}.doc`, `﻿${html}`, 'application/msword');
+  const saveWord = (product, persona, html) => download(wordName(product, persona), `﻿${html}`, 'application/msword');
   const saveJson = (pb, title, name) => download(`情境檔_${safeName(name)}_${stamp()}.json`, JSON.stringify(exportData(pb, title, new Date().toISOString()), null, 2), 'application/json');
 
   function onClick(e) {
@@ -1200,7 +1205,7 @@ const Arena = (() => {
     // ---- 劇本頁
     const s = W.saved;
     if (act === 'call') { if (confirmRows()) H.startCall(s.id); return; }
-    if (act === 'word') { saveWord(s.ctx.c.name, docHtml(s.ctx, s.ol, cleanRows(readRows(), s.ctx), today())); return; }
+    if (act === 'word') { saveWord(s.ctx.p.name, s.ctx.pr.title, docHtml(s.ctx, s.ol, cleanRows(readRows(), s.ctx), today())); return; }
     if (act === 'export') { if (confirmRows()) saveJson(toScenario(s.ctx, s.ol, s.rows).playbook, s.title, s.ctx.c.name); return; }
     if (act === 'again') { if (confirmRows()) { W.step = 1; render(); } return; }
     if (act === 'saverows') { put(s.ctx, s.ol, cleanRows(readRows(), s.ctx), '對話已儲存'); return; }
@@ -1287,10 +1292,10 @@ const Arena = (() => {
       const sc = (await H.api('/api/editor/get', { id })).scenario;
       if (sc.playbook) {
         const { ctx, ol, rows } = fromPlaybook(sc.playbook);
-        saveWord(ctx.c.name, docHtml(ctx, ol, rows, today()));
+        saveWord(ctx.p.name, ctx.pr.title, docHtml(ctx, ol, rows, today()));
       } else {
         const pub = H.scenario(id) || sc; // 首頁那份已經把「業務稱呼」這些代稱換成實際的字
-        saveWord(pub.customer?.name, plainDocHtml(pub, today()));
+        saveWord(pub.product, pub.customer?.name, plainDocHtml(pub, today())); // 不是三步驟做的：沒有客戶態樣，用客戶的名字
       }
     } catch (err) {
       H.toast(esc(err.message), 'error', 6000, '下載失敗');

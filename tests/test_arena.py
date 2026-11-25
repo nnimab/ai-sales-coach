@@ -255,7 +255,27 @@ for x in (["x"], {"products": "x"}, {"nothing": 1}):
         bad.append("rejected")
 out["bad"] = bad
 out["limits"] = [server.PRODUCT_TEXT_MAX, server.PRODUCT_MAX_ITEMS]
-out["in_prompt"] = [k for k in out["keys"] + ["type"] if ("- " + k + "：") not in server.PRODUCT_PROMPT]
+fund_doc = """某某全球優選收益債券ETF基金 基金小檔案
+基金類型 指數股票型　計價幣別 新臺幣　風險收益等級 RR2
+收益分配 本基金成立日起滿45日(含)後，採每月配息，配息來源可能為收益平準金
+經理費 100億以上 0.20%；100億(含)以下 0.25%　保管費 0.05%
+本基金上市日前（不含當日），經理公司不接受本基金受益權單位數之買回。本基金上市後之買賣成交價格並無升降幅度限制。
+本基金並無受存款保險、保險安定基金或其他相關保障機制之保障，基金投資可能發生部分或全部本金之損失，投資人須自負盈虧。
+基金配息不代表基金實際報酬，且過去配息不代表未來配息；基金淨值可能因市場因素而上下波動。投資一定有風險，基金投資有賺有賠，申購前應詳閱公開說明書。"""
+fund_ai = {
+    "type": "fund", "name": "某某全球優選收益債券ETF基金", "ccy": "新臺幣", "risk": "RR2",
+    "coupon": "成立滿45日後每月配息，配息不代表實際報酬",
+    "tenor": "指數股票型，無閉鎖期（上市日前不含當日不接受買回）",
+    "call": "上市日前不接受買回；經理費 0.20%／0.25%（依規模不同），保管費 0.05%，無升降幅度限制",
+    "extra": "不保本", "risks": ["無存款保險保障", "不保本"],
+}
+p = server.clean_product(fund_ai, "基金.pdf\n" + fund_doc)
+out["stated"] = [p["tenor"], p["call"], p["extra"], p["coupon"], p["risks"]]
+out["stated_english"] = server.clean_product({"type": "fcn", "name": "USD FCN", "extra": "不保本，無閉鎖期", "risks": []},
+                                             "USD 6-Month Fixed Coupon Note. Not principal protected. " * 5)["extra"]
+out["stated_pieces"] = [server._drop_unstated(t, "非保本商品") for t in ("股票型（無閉鎖期）", "無提前贖回，但有閉鎖期", "（無下限價）月配", "甲，無乙丙，丁（無戊己，庚）", "不保本，無閉鎖期")]
+out["prompt_rules"] = [s for s in ("無閉鎖期", "不保本", "經理費", "寧可空著") if s not in server.PRODUCT_PROMPT]
+out["in_prompt"] =[k for k in out["keys"] + ["type"] if ("- " + k + "：") not in server.PRODUCT_PROMPT]
 print(json.dumps(out, ensure_ascii=False))
 '''
 
@@ -305,6 +325,18 @@ class ProductCleanTests(unittest.TestCase):
         self.assertEqual(self.out["limits"], [20000, 6])
         js = (_util.ROOT / "web" / "arena.js").read_text("utf-8")
         self.assertIn("const DOC_TEXT_MAX = 20000;", js)  # 網頁送的字數上限要和伺服器一樣
+
+    def test_unstated_negations_are_dropped(self):
+        """文件沒講的否定句（「無閉鎖期」「不保本」）：那一小句拿掉，其他照留。風險清單和英文文件不比對。"""
+        tenor, call, extra, coupon, risks = self.out["stated"]
+        self.assertEqual(tenor, "指數股票型（上市日前不含當日不接受買回）")
+        self.assertEqual(call, "上市日前不接受買回；經理費 0.20%／0.25%（依規模不同），保管費 0.05%，無升降幅度限制")  # 文件有講的否定句、費用都留著
+        self.assertEqual(extra, "")
+        self.assertEqual(coupon, "成立滿45日後每月配息，配息不代表實際報酬")
+        self.assertEqual(risks, "無存款保險保障\n不保本")  # 風險是 AI 用自己的話摘要的：不比對
+        self.assertEqual(self.out["stated_english"], "不保本，無閉鎖期")
+        self.assertEqual(self.out["stated_pieces"], ["股票型", "有閉鎖期", "月配", "甲，丁（庚）", "不保本"])  # 文件有「保本」：這一句留著
+        self.assertEqual(self.out["prompt_rules"], [])
 
     def test_made_up_values_are_dropped(self):
         p = self.out["made_up"]

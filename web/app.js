@@ -1729,9 +1729,85 @@ const ScenarioAdmin = (() => {
     meta = { scenarios: [], avatars: [], placeholders: [], ...(await api('/api/editor/list', {})) };
   }
 
+  // ---- 兩個分頁：商品範本（這檔商品該怎麼講，公司會審核）／對練情境（這次面對的客戶）。記住上次停在哪一頁，從編輯頁回來才不會跳掉
+
+  const TAB_KEY = 'aicoach.scnTab';
+  let tab = 'templates';
+  try { if (localStorage.getItem(TAB_KEY) === 'scenarios') tab = 'scenarios'; } catch { /* 讀不到就用預設 */ }
+
+  function setTab(name, focus = false) {
+    tab = name === 'scenarios' ? 'scenarios' : 'templates';
+    try { localStorage.setItem(TAB_KEY, tab); } catch { /* 存不了就算了 */ }
+    $$('#scnTabs [data-tab]').forEach((b) => {
+      const on = b.dataset.tab === tab;
+      b.classList.toggle('on', on);
+      b.setAttribute('aria-selected', String(on));
+      b.tabIndex = on ? 0 : -1;
+      if (on && focus) b.focus();
+    });
+    $$('#view-scenarios [data-pane]').forEach((el) => { el.hidden = el.dataset.pane !== tab; });
+  }
+
+  // ---- 商品範本清單
+
+  let templates = [];
+  const TYPE_TAG = { fcn: 'FCN', bond: '海外債', fund: '共同基金', custom: '其他商品' };
+  const dayOf = (iso) => { const d = new Date(iso); return Number.isNaN(d.getTime()) ? '' : d.toLocaleDateString('zh-TW'); };
+
+  async function renderTemplates() {
+    const box = $('#tplAdminList');
+    try {
+      templates = (await api('/api/template/list', {})).templates || [];
+    } catch (err) {
+      box.innerHTML = `<p class="notice">讀不到商品範本：${esc(err.message)}</p>`;
+      return;
+    }
+    $('#tplCount').textContent = templates.length || '';
+    if (!templates.length) {
+      box.innerHTML = '<div class="empty"><b>還沒有商品範本</b>按右上角「新增範本」，上傳商品 DM 或說明書，AI 會先幫你填好。</div>';
+      return;
+    }
+    box.innerHTML = templates.map((t) => {
+      const ok = t.review?.status === 'approved';
+      const sub = [t.issuer, t.code, t.risk].filter(Boolean).join(' · ');
+      return `<div class="list-row" role="button" tabindex="0" data-id="${esc(t.id)}">
+        <div class="list-main"><b>${esc(t.name)}</b><span>${esc(sub)}</span></div>
+        <span class="tag">${esc(TYPE_TAG[t.type] || '')}</span>
+        <span class="tag ${ok ? 'green' : 'amber'}"${ok ? ` title="${esc(`${t.review.by}　${dayOf(t.review.at)}`)}"` : ''}>${ok ? '已審核' : '未審核'}</span>
+        <div class="row-acts"><button class="pill sm ghost" type="button" data-act="delete">刪除</button></div>
+      </div>`;
+    }).join('');
+    $$('.list-row', box).forEach((row) => {
+      const t = templates.find((x) => x.id === row.dataset.id);
+      const openRow = () => Arena.openTemplate(t.id);
+      row.addEventListener('click', openRow);
+      row.addEventListener('keydown', (e) => {
+        if (e.target !== row || (e.key !== 'Enter' && e.key !== ' ')) return;
+        e.preventDefault();
+        openRow();
+      });
+      $('[data-act="delete"]', row).addEventListener('click', async (e) => {
+        e.stopPropagation();
+        if (!window.confirm(`要刪除商品範本「${t.name}」嗎？`)) return;
+        try {
+          await api('/api/template/delete', { id: t.id });
+          toast('已刪除', 'info', 2500);
+          renderTemplates();
+        } catch (err) {
+          toast(esc(err.message), 'error', 6000, '刪除失敗');
+        }
+      });
+    });
+  }
+
   // ---- 情境清單
 
-  async function renderList() {
+  function renderList() {
+    setTab(tab);
+    return Promise.all([renderTemplates(), renderScenarios()]);
+  }
+
+  async function renderScenarios() {
     const box = $('#scnAdminList');
     try {
       await loadMeta();
@@ -1739,6 +1815,7 @@ const ScenarioAdmin = (() => {
       box.innerHTML = `<p class="notice">讀不到情境：${esc(err.message)}</p>`;
       return;
     }
+    $('#scnCount').textContent = meta.scenarios.length || '';
     if (!meta.scenarios.length) {
       box.innerHTML = '<div class="empty"><b>還沒有情境</b>按右上角「新增情境」開始。</div>';
       return;
@@ -2170,6 +2247,13 @@ const ScenarioAdmin = (() => {
     }
   });
 
+  $('#btnNewTemplate').addEventListener('click', () => Arena.openTemplate());
+  $('#scnTabs').addEventListener('click', (e) => { const b = e.target.closest('[data-tab]'); if (b) setTab(b.dataset.tab); });
+  $('#scnTabs').addEventListener('keydown', (e) => { // 分頁用左右鍵換
+    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+    e.preventDefault();
+    setTab(tab === 'templates' ? 'scenarios' : 'templates', true);
+  });
   $('#btnNewScenario').addEventListener('click', () => Arena.open()); // 三步驟；裡面可以改用這裡的空白表單（進階）
   $('#btnImportScenario').addEventListener('click', () => $('#importScenarioFile').click());
   $('#importScenarioFile').addEventListener('change', async (e) => {
@@ -5145,7 +5229,7 @@ $$('.nav-item').forEach((b) => b.addEventListener('click', () => go(b.dataset.na
 AdminNav.init();
 // 新增情境三步驟、劇本、下載 Word、情境檔匯出匯入（arena.js）
 Arena.init({
-  api, toast, go, show, setNav, reloadScenarios, startCall, avatarSVG,
+  api, toast, go, show, setNav, reloadScenarios, startCall, avatarSVG, icon,
   openEditor: (id) => ScenarioAdmin.open(id),
   scenario: (id) => state.scenarios.find((s) => s.id === id),
 });

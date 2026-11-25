@@ -4,6 +4,8 @@
 voices.json
 profile.json
 live_link.json
+# 商品範本（本機自己建的），和 scenarios/custom 一樣只留在這台電腦
+templates.json
 # ChatGPT 登入資料（token）
 .chatgpt/
 # Vercel 指令產生的本機連結資料

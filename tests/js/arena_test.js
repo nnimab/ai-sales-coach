@@ -186,7 +186,71 @@ test('商品檔解析：抓得到名稱、發行機構、ISIN、評等、票息'
   assert.equal(o.risk, 'RR3');
   assert.equal(o.type, 'bond');
   assert.ok(o.coupon.includes('5.5%'));
-  assert.equal(Arena.parseProduct('', 'x.pdf').name, '');
+});
+
+test('上傳商品檔：文件裡沒寫名稱時，用檔名當商品名稱', () => {
+  assert.equal(Arena.parseProduct('', 'x.pdf').name, 'x'); // 讀不到字（例如掃描的 PDF）也至少有名稱
+  assert.equal(Arena.parseProduct('', '永豐_FCN_NVDA_TSLA_6M (1).pdf').name, '永豐 FCN NVDA TSLA 6M');
+  assert.equal(Arena.parseProduct('', '永豐_FCN_NVDA_TSLA_6M (1).pdf').type, 'fcn');
+  assert.equal(Arena.parseProduct('這是一檔債券型基金的月報，內容沒有欄位名稱', '00985B 月報.pdf').name, '00985B 月報');
+  assert.equal(Arena.parseProduct('基金名稱：某某全球債券基金', '月報.pdf').name, '某某全球債券基金'); // 文件有寫就用文件的
+  // PDF 抽出來的「部首字」換回一般的字（⼆→二、⾏→行、⽤→用），全形標點不動
+  assert.equal(Arena.fixCjk('⼆、發⾏機構信⽤風險：（測試），１２％'), '二、發行機構信用風險：（測試），１２％');
+  // 規則抓風險：標題和「風險等級」那一行不算，前面的編號拿掉
+  const risks = Arena.parseProduct('商品風險等級 RR4\n主要風險\n一、本商品非保本，有本金損失風險。\n2. 發行機構信用風險。\n匯率風險', 'x.pdf').risks;
+  assert.equal(risks, '本商品非保本，有本金損失風險。\n發行機構信用風險。\n匯率風險');
+  // 表格式的文件（沒有冒號）：一行開頭是欄位名稱、空白後面是內容
+  const tbl = Arena.parseProduct(['美元計價 6 個月期固定配息股權連結商品（FCN）主要條件', '發行機構 測試國際金融股份有限公司', '商品代號 XS9900112233',
+    '商品風險等級 RR4', '連結標的 NVDA、TSLA', '配息 年化 12.00%，每月配息一次', '天期 6 個月', '履約價 期初價格的 85%', '提前出場 每月觀察一次', '下限價 期初價格的 65%',
+    '說明：本商品之發行機構信用評等可能調整。'].join('\n'), 'x.pdf');
+  assert.equal(tbl.type, 'fcn');
+  assert.equal(tbl.issuer, '測試國際金融股份有限公司');
+  assert.equal(tbl.code, 'XS9900112233');
+  assert.equal(tbl.risk, 'RR4');
+  assert.equal(tbl.under, 'NVDA、TSLA');
+  assert.equal(tbl.coupon, '年化 12.00%，每月配息一次');
+  assert.equal(tbl.tenor, '6 個月');
+  assert.equal(tbl.strike, '期初價格的 85%');
+  assert.equal(tbl.call, '每月觀察一次');
+  assert.equal(tbl.ki, '期初價格的 65%');
+  assert.equal(tbl.rating, ''); // 句子中間提到「信用評等」不算
+  const fund = Arena.parseProduct('測試全球債券基金\n基金公司　測試投信\n基金類型　海外債券型\n配息政策　每月配息\n買回費用　持有未滿 7 日收 0.01%', '基金月報.pdf');
+  assert.equal(fund.type, 'fund');
+  assert.equal(fund.issuer, '測試投信');
+  assert.equal(fund.tenor, '海外債券型');
+  assert.equal(fund.coupon, '每月配息');
+  assert.equal(fund.call, '持有未滿 7 日收 0.01%');
+  assert.equal(Arena.nameFromFile('美元債DM - 複製 (2).docx'), '美元債DM');
+  assert.equal(Arena.nameFromFile('a'.repeat(80) + '.txt').length, 60);
+  assert.equal(Arena.nameFromFile(''), '');
+});
+
+test('上傳商品檔：AI 讀到的蓋過檔名和規則抓的，使用者自己改過的不動', () => {
+  const blank = () => Object.fromEntries(Arena.FK.map((k) => [k, '']));
+  const snap = { type: 'fcn', p: { ...blank(), name: '月報', coupon: '舊的配息' } };
+  const raw = { type: 'fcn', ph: ['20年期太長，跌下來誰賠？', '我自己的口頭禪'], p: { ...snap.p, coupon: '我自己改的' } };
+  const n = Arena.mergeProduct(raw, snap, {
+    type: 'fund', name: '  某某全球債券基金 ', issuer: '某某投信', coupon: 'AI 的配息', risk: 'RR9', code: '', risks: '匯率風險\n\n\n\n流動性風險', bogus: 'x', call: { a: 1 },
+  });
+  assert.equal(raw.type, 'fund'); // 類型沒被使用者改過：照 AI 的
+  assert.deepEqual(raw.ph, ['我自己的口頭禪']); // 換成基金：只有債券才講的預設口頭禪取消
+  assert.equal(raw.p.name, '某某全球債券基金'); // AI 的名稱蓋過檔名
+  assert.equal(raw.p.issuer, '某某投信');
+  assert.equal(raw.p.coupon, '我自己改的'); // 等 AI 的時候自己改過：不蓋
+  assert.equal(raw.p.risk, ''); // 不是 RR1～RR5：不收
+  assert.equal(raw.p.risks, '匯率風險\n\n流動性風險');
+  assert.ok(!('bogus' in raw.p));
+  assert.equal(n, 3);
+  // 使用者等的時候自己換了類型：AI 的類型不蓋，欄位照樣補
+  const raw2 = { type: 'bond', ph: [], p: { ...snap.p } };
+  assert.equal(Arena.mergeProduct(raw2, snap, { type: 'fund', name: '某某基金' }), 1);
+  assert.equal(raw2.type, 'bond');
+  // AI 什麼都沒讀到，或回的東西不對：表單原樣
+  const raw3 = { type: 'fcn', ph: [], p: { ...snap.p } };
+  assert.equal(Arena.mergeProduct(raw3, snap, Object.fromEntries(Arena.FK.map((k) => [k, '']))), 0);
+  assert.equal(Arena.mergeProduct(raw3, snap, null), 0);
+  assert.equal(Arena.mergeProduct(raw3, snap, { type: 'nope', name: 123 }), 1); // 數字當成字收下，類型不認得就不換
+  assert.equal(raw3.type, 'fcn');
 });
 
 test('Word 文件：四個章節都在，使用者填的字有跳脫', () => {

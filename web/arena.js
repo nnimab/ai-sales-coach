@@ -2,7 +2,7 @@
 
 // AI 業務擂台：「新增情境」三步驟（商品 → 客戶人設 → 確認大綱）、Role Play 劇本、下載 Word、情境檔的匯出匯入。
 // 內容來自「Role Play 劇本與超業範本生成器」：人設卡、對話範本、異議表、必揭露風險、評分指標都照原樣搬進來，
-// 不靠 AI，同樣的輸入每次產出一樣的結果。
+// 劇本和情境不靠 AI，同樣的輸入每次產出一樣的結果；只有第一步「上傳商品檔」會請 AI 讀內容、幫忙填欄位（填完還是給人核對）。
 // 上半段是資料和純邏輯（不碰畫面，Node 也能測）；下半段是畫面，由 app.js 呼叫 Arena.init() 接上。
 
 const Arena = (() => {
@@ -447,13 +447,44 @@ const Arena = (() => {
   // 只看「填的內容」有沒有變（大綱和對話是另外改的）
   const recipeKey = (ctx) => JSON.stringify([ctx.type, ctx.pid, ctx.av, ctx.p, ctx.c, ctx.ph, ctx.d]);
 
-  // ---- 商品檔的文字 → 欄位（規則照生成器；抓不到就留空給人填）
+  // PDF 抽出來的中文常混著「長得一樣、其實是另一個字」的部首字和相容字（例如 ⼆、⾏、⽤）：換回一般的字，後面比對和顯示才正常。
+  // 只換這幾段，不動全形標點
+  const fixCjk = (s) => String(s || '').replace(/[⺀-⻳⼀-⿕豈-﫿]/g, (c) => c.normalize('NFKC'));
+
+  // 檔名 → 商品名稱：去掉副檔名、下載時多出來的「(1)」「- 複製」，底線換成空白
+  const nameFromFile = (fname) => one(String(fname || '').replace(/\.[^.]+$/, '').replace(/[_＿]+/g, ' ')
+    .replace(/(?:\s*[（(]\d+[)）]|\s*-\s*(?:複製|副本|copy))+\s*$/i, ''), 60);
+
+  // 換商品類型：預設口頭禪裡這個類型講不通的（例如基金的「20年期太長」）取消勾選；自己加的留著
+  function applyType(raw, type) {
+    raw.type = type;
+    raw.ph = (raw.ph || []).filter((t) => fitsType(type, t) || !PHRASES.includes(t));
+  }
+
+  // AI 讀完商品文件後併進表單：AI 有讀到的，蓋過檔名和規則抓的；等的這段時間使用者自己改過的欄位和類型不動。
+  // raw 是表單現在的內容，snap 是送去給 AI 之前的樣子，ai 是伺服器回的欄位。回傳 AI 改了幾格。
+  function mergeProduct(raw, snap, ai) {
+    let n = 0;
+    if (!ai || typeof ai !== 'object') return n;
+    if (TYPES[ai.type] && raw.type === snap.type && ai.type !== raw.type) applyType(raw, ai.type);
+    FK.forEach((k) => {
+      const got = typeof ai[k] === 'string' || typeof ai[k] === 'number' ? String(ai[k]) : ''; // 只收字：物件、陣列不要
+      const val = k === 'risks' ? many(got, 1200) : one(got, k === 'name' ? 60 : 200);
+      if (!val || val === raw.p[k] || raw.p[k] !== snap.p[k]) return;
+      if (k === 'risk' && !/^RR[1-5]$/.test(val)) return;
+      raw.p[k] = val;
+      n += 1;
+    });
+    return n;
+  }
+
+  // ---- 商品檔的文字 → 欄位（規則照生成器；抓不到就留空給人填）。這是不靠 AI 的那一段：馬上有結果，AI 不能用時也還有它
   function parseProduct(t, fname) {
     t = String(t || '');
     fname = String(fname || '');
     const g = (re) => { const m = t.match(re); return m ? m[1].trim() : ''; };
     const o = {};
-    o.name = g(/(?:商品名稱|債券名稱|基金名稱)[：:]\s*([^\n\r]+)/);
+    o.name = g(/(?:商品名稱|產品名稱|債券名稱|基金名稱)[：:]\s*([^\n\r]+)/);
     o.issuer = g(/(?:發行機構|發行人|發行商|發行銀行)[：:]\s*([^\n\r]+)/);
     const isin = t.match(/\b([A-Z]{2}[A-Z0-9]{9}[0-9])\b/);
     o.code = isin ? isin[1] : '';
@@ -472,18 +503,35 @@ const Arena = (() => {
     if (!o.tenor) { const dm = t.match(/(?:到期日?|Maturity)[^\n\r\d]{0,6}(20\d\d[/\-.年]\s?\d{1,2}[/\-.月]\s?\d{1,2}日?)/i); if (dm) o.tenor = dm[1]; }
     if (!o.extra) { const lm = t.match(/閉鎖期[^\n\r]{0,24}/); if (lm) o.extra = lm[0].trim(); }
     if (!o.call) { const km = t.match(/[^\n\r。]{0,20}(?:有權|得)[^\n\r。]{0,12}提前(?:贖回|買回)[^\n\r。]{0,30}/); if (km) o.call = km[0].trim(); }
-    if (!o.risks) { const rl = t.split(/\n/).filter((x) => /風險/.test(x) && x.length < 60).slice(0, 6).map((x) => x.trim()); if (rl.length) o.risks = rl.join('\n'); }
+    if (!o.risks) {
+      // 有「風險」兩個字的短句；「風險等級 RR4」和「主要風險」這種標題不算，前面的「一、」「1.」拿掉
+      const rl = t.split(/\n/).map((x) => x.trim().replace(/^(?:[一二三四五六七八九十]+|\d+)[、.．)）]\s*/, ''))
+        .filter((x) => /風險/.test(x) && x.length < 60 && !/等級|RR\s*[1-5]/i.test(x) && !/^(?:主要|相關|投資|商品)*風險(?:提示|揭露|說明|因素|預告書?)?[：:。]?$/.test(x)).slice(0, 6);
+      if (rl.length) o.risks = rl.join('\n');
+    }
+    // 表格式的文件沒有冒號（「發行機構　某某公司」）：上面沒抓到的，再用「一行開頭是欄位名稱、空白後面是內容」抓一次
+    const row = (labels) => { const m = t.match(new RegExp(`(?:^|\\n)[ \\t　]*(?:${labels})[ \\t　]+([^\\n\\r]+)`, 'i')); return m ? m[1].trim() : ''; };
+    const fuller = (k, labels) => { const x = row(labels); if (x && (!o[k] || x.includes(o[k]))) o[k] = x; }; // 整行比上面只抓到數字的那一小段完整
+    if (!o.issuer) o.issuer = row('發行機構|發行人|發行銀行|基金公司|經理公司');
+    fuller('coupon', '配息率|配息政策|配息方式|配息頻率|配息|票面利率|票息');
+    fuller('tenor', '天期|到期日|年期|基金類型|基金種類');
+    if (!o.rating) o.rating = row('(?:發行機構|債券)?信用評等');
     o.under = g(/(?:連結標的|標的資產|連結資產|連結股票)[：:]\s*([^\n\r]+)/);
     o.strike = g(/(?:履約價|執行價|Strike)[^：:\n]{0,10}[：:]\s*([^\n\r]+)/i);
     o.ki = g(/(?:下限價|敲入|Knock[- ]?in|KI)[^：:\n]{0,10}[：:]\s*([^\n\r]+)/i);
     const ko = g(/(?:提前出場|自動提前|敲出|Knock[- ]?out|Autocall|KO)[^：:\n]{0,10}[：:]\s*([^\n\r]+)/i);
     if (ko) o.call = ko;
+    if (!o.under) o.under = row('連結標的|標的資產|連結資產|連結股票');
+    if (!o.strike) o.strike = row('履約價(?:格)?|執行價(?:格)?');
+    if (!o.ki) o.ki = row('下限價(?:格)?|敲入價(?:格)?');
+    if (!ko) { const k2 = row('提前出場(?:條件)?|自動提前出場(?:條件)?'); if (k2) o.call = k2; }
+    if (!o.call) o.call = row('買回費用|贖回費用|提前贖回(?:條件)?');
     const stem = fname.replace(/\.[^.]+$/, '');
     if (!o.code) { const fi = stem.match(/[A-Z]{2}[A-Z0-9]{9}[0-9]/); if (fi) o.code = fi[0]; }
     if (!o.risk) { const fr = stem.match(/RR\s*([1-5])/i); if (fr) o.risk = `RR${fr[1]}`; }
     const head = stem + t.slice(0, 400);
     o.type = /FCN|固定配息|Fixed Coupon|股權連結/i.test(head) ? 'fcn' : /債|bond/i.test(head) && !/基金/.test(stem) ? 'bond' : /基金|fund/i.test(head) ? 'fund' : '';
-    if (!o.name && stem && (o.issuer || o.coupon || o.code || o.tenor)) o.name = stem;
+    if (!o.name) o.name = nameFromFile(fname); // 文件裡沒有寫「商品名稱：」：先用檔名，至少不用自己打
     return o;
   }
 
@@ -613,13 +661,14 @@ const Arena = (() => {
     return fromPlaybook(data.playbook);
   }
 
-  const logic = { TYPES, UNITS, FK, FIELDS, fieldsOf, fitsType, personaFor, PH, PHRASES, DIFF_OPTS, PERSONAS, SECTIONS, normalize, riskList, buildOutline, cleanOutline, buildChat, cleanRows, toScenario, fromPlaybook, recipeKey, parseProduct, sec1, sec2, sec3, sec4, selfScore, docHtml, plainDocHtml, exportData, readExport };
+  const logic = { TYPES, UNITS, FK, FIELDS, fieldsOf, fitsType, personaFor, PH, PHRASES, DIFF_OPTS, PERSONAS, SECTIONS, normalize, riskList, buildOutline, cleanOutline, buildChat, cleanRows, toScenario, fromPlaybook, recipeKey, parseProduct, fixCjk, nameFromFile, applyType, mergeProduct, sec1, sec2, sec3, sec4, selfScore, docHtml, plainDocHtml, exportData, readExport };
 
   // ------------------------------------------------------------------ 畫面（以下只在瀏覽器裡跑）
 
   let H = null; // app.js 給的工具：api、toast、go、show、setNav、reloadScenarios、startCall、avatarSVG、openEditor、scenario
   const WINDOW_KEY = 'aicoach.arenaWindow';
-  const W = { step: 1, raw: null, phrases: [], editId: '', saved: null, base: null, dirty: false, busy: false, gen: 0 };
+  // up、ctrl、note 是上傳商品檔用的：第幾次上傳、還在等的 AI 請求、上傳框下面那行字
+  const W = { step: 1, raw: null, phrases: [], editId: '', saved: null, base: null, dirty: false, busy: false, gen: 0, up: 0, ctrl: null, note: null };
   const $id = (id) => document.getElementById(id);
   const today = () => new Date().toLocaleDateString('zh-TW');
   const stamp = () => new Date().toISOString().slice(0, 10);
@@ -632,7 +681,18 @@ const Arena = (() => {
     return { type: Object.keys(TYPES)[0], p, pid: '', av: '', c: { name: '', age: '', job: '', asset: '' }, ph: [], d: 2, w: { unit: w.unit || '', name: w.name || '' } };
   }
 
-  // ---- 檔案解析（.txt 直接讀；.docx 解壓縮後拿文字；.pdf 只抓得到簡單的文字層，中文 PDF 多半抓不到）
+  // ---- 檔案解析：在瀏覽器裡把檔案變成文字（.txt 直接讀；.docx 解壓縮後拿文字；.pdf 用 pdf.js）。
+  // 檔案本身不會上傳；抽出來的文字會送給伺服器上的 AI 判讀欄位（/api/editor/product）
+  const FILE_MAX = 20 * 1024 * 1024;
+  const DOC_TEXT_MAX = 12000; // 送給 AI 的文字上限，和伺服器的 PRODUCT_TEXT_MAX 一樣
+  const AI_TEXT_MIN = 20; // 讀到的字比這還少：當作讀不到，不問 AI
+  const AI_WAIT_MS = 90000;
+  const PDF_PAGES = 12; // 只讀前幾頁：商品的關鍵條件都在前面
+  const NOTE0 = '還沒上傳；每個欄位都可以手動填、手動改。';
+  // pdf.js（Mozilla 的 PDF 元件）：第一次上傳 PDF 才下載。固定版本加上完整性檢查，CDN 上的檔案被換掉就不會執行（跟 liveavatar.js 載 LiveKit 一樣）
+  const PDFJS = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38';
+  const PDFJS_LIB = ['/legacy/build/pdf.min.mjs', 'sha384-z/XbAtvhBXJoK+yvYimnFuTCF6/2wTCDSIFD09/HtIfwFtvDKOMdAe5Z3wOChkmW'];
+  const PDFJS_WORKER = ['/legacy/build/pdf.worker.min.mjs', 'sha384-vbNBYP03jHFPlgtK4qSXtazEmGfmpTWlSsfq9OiU20MroW/Q9TbaEXiM7PpeWg+6'];
   const inflate = (bytes, fmt) => new Response(new Blob([bytes]).stream().pipeThrough(new DecompressionStream(fmt))).arrayBuffer().then((b) => new Uint8Array(b));
   const decodeEnt = (s) => { const t = document.createElement('textarea'); t.innerHTML = s; return t.value; };
   async function readDocx(file) {
@@ -662,8 +722,55 @@ const Arena = (() => {
     }
     return '';
   }
+  let pdfjs = null;
+  function loadPdfjs() {
+    if (!pdfjs) {
+      // 先用 fetch 下載並核對完整性，再從記憶體載入（import() 自己沒辦法核對）
+      const grab = async ([path, integrity]) => {
+        const r = await fetch(PDFJS + path, { integrity, credentials: 'omit' });
+        if (!r.ok) throw new Error(`pdf.js ${r.status}`);
+        return URL.createObjectURL(new Blob([await r.arrayBuffer()], { type: 'text/javascript' }));
+      };
+      pdfjs = Promise.all([grab(PDFJS_LIB), grab(PDFJS_WORKER)]).then(async ([lib, worker]) => {
+        const m = await import(lib);
+        m.GlobalWorkerOptions.workerSrc = worker;
+        return m;
+      });
+      pdfjs.catch(() => { pdfjs = null; }); // 下載不了：下次上傳再試
+    }
+    return pdfjs;
+  }
+  // 回傳 { text, why }：why 是讀不到字的原因（給畫面上那行字用）
   async function readPdf(file) {
-    const u8 = new Uint8Array(await file.arrayBuffer());
+    const data = new Uint8Array(await file.arrayBuffer());
+    let lib;
+    try { lib = await loadPdfjs(); } catch {
+      // 備案讀出來的常常是亂碼：要大部分是看得懂的字（中文至少 20 個，或英文單字至少 15 個），不然當作沒讀到，不拿去問 AI
+      const rough = await readPdfRough(data).catch(() => '');
+      const count = (re) => (rough.match(re) || []).length;
+      const ok = count(/[一-鿿\w\s，。、：；（）%.,:;()/-]/g) >= rough.length * 0.85 && (count(/[一-鿿]/g) >= 20 || count(/[A-Za-z]{3,}/g) >= 15);
+      return { text: ok ? rough : '', why: '讀不到文字（讀 PDF 的元件下載不了，請檢查網路後再傳一次）' };
+    }
+    const task = lib.getDocument({ data, cMapUrl: `${PDFJS}/cmaps/`, cMapPacked: true, standardFontDataUrl: `${PDFJS}/standard_fonts/`, isEvalSupported: false, disableFontFace: true, verbosity: 0 });
+    try {
+      const doc = await task.promise;
+      const parts = [];
+      let size = 0;
+      for (let i = 1; i <= Math.min(doc.numPages, PDF_PAGES) && size < DOC_TEXT_MAX * 2; i += 1) {
+        const tc = await (await doc.getPage(i)).getTextContent();
+        const s = tc.items.map((it) => (it.str || '') + (it.hasEOL ? '\n' : '')).join('');
+        parts.push(s);
+        size += s.length;
+      }
+      return { text: parts.join('\n'), why: '是掃描的圖片，裡面沒有可以讀的文字' };
+    } catch (e) {
+      return { text: '', why: e?.name === 'PasswordException' ? '有密碼保護，打不開' : '打不開（檔案可能壞了）' };
+    } finally {
+      Promise.resolve(task.destroy()).catch(() => {});
+    }
+  }
+  // pdf.js 下載不了時的備案：只抓得到沒壓縮、沒編碼的簡單文字，中文 PDF 多半抓不到
+  async function readPdfRough(u8) {
     const s = new TextDecoder('latin1').decode(u8);
     const out = [];
     let pos = 0;
@@ -688,24 +795,67 @@ const Arena = (() => {
     return out.join('');
   }
 
+  // 上傳框下面那行字。busy 是「還在跑」；idle 是中途被放掉（離開這一步）時要改顯示的字
+  function setNote(text, busy = false, idle = '') {
+    W.note = { text, busy, idle };
+    const el = $id('wzFileInfo');
+    if (el) { el.textContent = text; el.classList.toggle('busy', busy); }
+  }
+  // 放掉還在跑的上傳：又傳了一個、離開第一步、關掉這一頁。AI 晚回來的結果就不用了
+  function dropUpload() {
+    W.up += 1;
+    W.ctrl?.abort();
+    W.ctrl = null;
+    if (W.note?.busy) W.note = { text: W.note.idle || NOTE0, busy: false, idle: '' };
+  }
+
+  // 上傳商品檔：1. 讀出文字 → 2. 檔名和規則先帶入（馬上看得到）→ 3. AI 讀內容，讀到的補上去
   async function takeFile(f) {
-    const info = $id('wzFileInfo');
-    if (!f || !info) return;
+    if (!f || !$id('wzFileInfo')) return;
     const ext = f.name.split('.').pop().toLowerCase();
-    if (!['txt', 'pdf', 'docx'].includes(ext)) { info.textContent = `不支援的格式：${f.name}`; return; }
-    info.textContent = '解析中…';
+    if (!['txt', 'pdf', 'docx'].includes(ext)) { setNote(`不支援的格式：${f.name}（請用 .docx、.txt、.pdf）`); return; }
+    if (f.size > FILE_MAX) { setNote(`「${f.name}」太大了（最多 20 MB）。`); return; }
+    dropUpload();
+    const my = W.up;
+    setNote(`正在讀「${f.name}」…`, true);
     let text = '';
-    try { text = ext === 'txt' ? await f.text() : ext === 'docx' ? await readDocx(f) : await readPdf(f); } catch { text = ''; }
+    let why = '裡面讀得到的文字太少';
+    try {
+      if (ext === 'txt') text = await f.text();
+      else if (ext === 'docx') text = await readDocx(f);
+      else ({ text, why } = await readPdf(f));
+    } catch { text = ''; }
+    if (my !== W.up) return;
+    text = fixCjk(text);
     const o = parseProduct(text, f.name);
-    let n = 0;
     readForm();
-    FK.forEach((k) => { W.raw.p[k] = ''; });
-    FK.forEach((k) => { if (o[k]) { W.raw.p[k] = k === 'risks' ? many(o[k], 1200) : one(o[k], k === 'name' ? 60 : 200); n += 1; } });
-    if (o.type && n) W.raw.type = o.type;
+    FK.forEach((k) => { W.raw.p[k] = o[k] ? (k === 'risks' ? many(o[k], 1200) : one(o[k], k === 'name' ? 60 : 200)) : ''; });
+    if (o.type) applyType(W.raw, o.type);
     W.dirty = true;
+    const filled = () => fieldsOf(W.raw.type).filter(([k]) => W.raw.p[k]).length;
+    if (text.replace(/\s+/g, '').length < AI_TEXT_MIN) {
+      setNote(`「${f.name}」${why}，先用檔名當商品名稱，其他欄位請手動填。`);
+      render();
+      return;
+    }
+    const done = `已從「${f.name}」帶入 ${filled()} 個欄位，請核對後修改。`;
+    setNote(`已從「${f.name}」帶入 ${filled()} 個欄位，AI 正在讀內容，讀完會自動補上（大約 10～30 秒）…`, true, done);
     render();
-    $id('wzFileInfo').textContent = n ? `已從「${f.name}」帶入 ${n} 個欄位，請核對後修改。`
-      : `「${f.name}」沒有抓到可用的內容${ext === 'pdf' ? '（中文 PDF 多半抓不到字，改用 Word 檔或手動填比較準）' : ''}，請手動填寫。`;
+    const snap = { type: W.raw.type, p: { ...W.raw.p } };
+    const ctrl = new AbortController();
+    W.ctrl = ctrl;
+    const timer = setTimeout(() => ctrl.abort(), AI_WAIT_MS);
+    let d = null;
+    let err = '';
+    try { d = await H.api('/api/editor/product', { text: text.slice(0, DOC_TEXT_MAX), filename: f.name }, ctrl.signal); } catch (e) { err = e.name === 'AbortError' ? 'AI 讀太久' : (e.message || 'AI 沒有回應'); }
+    clearTimeout(timer);
+    if (my !== W.up) return; // 又傳了一個，或已經離開第一步：這份結果不用了
+    W.ctrl = null;
+    if (!d) { setNote(`已從「${f.name}」帶入 ${filled()} 個欄位（${err}，這次沒有用到 AI），請核對後手動補上。`); return; }
+    readForm(); // 等的時候使用者可能改了幾格：先收回來，改過的不蓋
+    const changed = mergeProduct(W.raw, snap, d.product) || W.raw.type !== snap.type;
+    setNote(changed ? `AI 已讀完「${f.name}」，帶入 ${filled()} 個欄位，請核對後修改。` : `${done.slice(0, -1)}（AI 也讀過了，沒有要補的）。`);
+    render();
   }
 
   // ---- 把畫面上的值收回 W.raw
@@ -735,8 +885,8 @@ const Arena = (() => {
     const ph = PH[r.type];
     return `<div class="field"><span>商品類型</span><div class="seg" role="group" aria-label="商品類型">${Object.entries(TYPES).map(([k, t]) =>
       `<button type="button" data-act="type" data-v="${k}" class="${r.type === k ? 'on' : ''}">${t}</button>`).join('')}</div></div>
-      <label class="wz-upload" id="wzDrop"><b>把商品 DM 或規格檔拖到這裡，或點一下選檔</b><span>.docx、.txt、.pdf；會自動帶入下面的欄位</span>
-        <input type="file" id="wzFile" accept=".txt,.pdf,.docx" hidden><span class="muted" id="wzFileInfo">還沒上傳；每個欄位都可以手動填、手動改。</span></label>
+      <label class="wz-upload" id="wzDrop"><b>把商品 DM 或規格檔拖到這裡，或點一下選檔</b><span>.docx、.txt、.pdf；檔名會帶入商品名稱，AI 會讀內容填好下面的欄位</span>
+        <input type="file" id="wzFile" accept=".txt,.pdf,.docx" hidden><span class="muted${W.note?.busy ? ' busy' : ''}" id="wzFileInfo" aria-live="polite">${esc(W.note?.text || NOTE0)}</span></label>
       <div class="form-grid">${fieldsOf(r.type).map(([k, label]) => {
         if (k === 'risk') return `<label class="field"><span>${label}</span><select data-p="risk"><option value="">請選擇</option>${[1, 2, 3, 4, 5].map((n) => `<option${r.p.risk === `RR${n}` ? ' selected' : ''}>RR${n}</option>`).join('')}</select></label>`;
         if (k === 'risks') {
@@ -828,6 +978,7 @@ const Arena = (() => {
     if (n > 1 && !W.raw.p.name.trim()) { W.step = 1; render(); msg('請填寫商品名稱。'); return; }
     if (n > 2 && !W.raw.pid) { W.step = 2; render(); msg('請選一張客戶人設卡。'); return; }
     if (n === 3 && W.step < 3) W.ol = null; // 前面改過了：大綱照新的內容重新產生
+    if (n !== 1) dropUpload(); // 離開第一步：不等 AI 了，照現在填的內容往下走
     W.step = n;
     render();
     document.querySelector('.main')?.scrollTo?.(0, 0);
@@ -901,8 +1052,7 @@ const Arena = (() => {
     if (act === 'blank') { if (!W.dirty || window.confirm('要放棄這裡填的內容，改用空白表單嗎？')) { W.dirty = false; H.openEditor(''); } return; }
     if (act === 'type') {
       readForm();
-      r.type = b.dataset.v;
-      r.ph = r.ph.filter((t) => fitsType(r.type, t) || !PHRASES.includes(t)); // 預設口頭禪裡這個類型講不通的（例如基金的「20年期太長」）：取消勾選；自己加的留著
+      applyType(r, b.dataset.v);
       W.dirty = true;
       render();
       return;
@@ -983,7 +1133,8 @@ const Arena = (() => {
   // 新增（id 空白）或重開一個三步驟做的情境
   async function open(id = '') {
     const my = ++W.gen;
-    Object.assign(W, { step: 1, raw: blankRaw(), phrases: [...PHRASES], editId: '', saved: null, base: null, dirty: false, busy: false, ol: null });
+    dropUpload();
+    Object.assign(W, { step: 1, raw: blankRaw(), phrases: [...PHRASES], editId: '', saved: null, base: null, dirty: false, busy: false, ol: null, note: null });
     if (id) {
       let sc;
       try { sc = (await H.api('/api/editor/get', { id })).scenario; } catch (err) { H.toast(esc(err.message), 'error', 6000, '打不開這個情境'); return; }
@@ -1046,7 +1197,7 @@ const Arena = (() => {
     }
   }
 
-  return { ...logic, init, open, downloadDoc, exportFile, importFile, get dirty() { return W.dirty; }, discard() { W.dirty = false; } };
+  return { ...logic, init, open, downloadDoc, exportFile, importFile, get dirty() { return W.dirty; }, discard() { W.dirty = false; dropUpload(); } };
 })();
 
 if (typeof module !== 'undefined' && module.exports) module.exports = Arena;

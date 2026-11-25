@@ -2,12 +2,15 @@
 1. 網頁的純邏輯：node 跑 tests/js/arena_test.js（沒裝 node 就略過）。
 2. 三種人設 × 四種商品（FCN、海外債、基金、自訂）× 三種刁難度轉出來的 36 個情境，真的送去伺服器存（雲端 app.py、假的 Gemini），每一個都要收得下。
 3. 劇本跟著情境存、清單和編輯畫面拿得到；沒送就沿用、送 null 就拿掉；太大或格式不對會被擋；隱藏設定照樣不外洩。
+4. 上傳商品檔：AI 把文件的文字整理成欄位（/api/editor/product）；代號、風險等級、條件裡的數字在文件裡找不到就不收。
 全部只連 127.0.0.1，不會用到任何真的金鑰。"""
 
 import http.client
 import json
+import re
 import shutil
 import subprocess
+import sys
 import unittest
 
 import _util
@@ -164,6 +167,124 @@ class SaveTests(unittest.TestCase):
     def test_4_sizes(self):
         biggest = max(len(json.dumps(s["playbook"], ensure_ascii=False, separators=(",", ":"))) for s in self.scenarios)
         self.assertLess(biggest, 24000)
+
+    def test_5_ai_reads_product_text(self):
+        """上傳商品檔：瀏覽器送文字上來，AI（這裡是假的 Gemini）整理成欄位。"""
+        doc = "商品名稱：美元計價 6 個月期 FCN\n連結標的：NVDA、TSLA\n固定配息率：年化 12%\n風險等級 RR4"
+        st, js, data = self.post("/api/editor/product", {"text": doc, "filename": "FCN條件書.pdf"})
+        self.assertEqual(st, 200, data[:300])
+        p = js["product"]
+        self.assertEqual(set(p), set(FIELD_KEYS) | {"type"})  # 欄位和網頁的一樣，不多不少
+        self.assertEqual(p["type"], "fcn")
+        self.assertTrue(p["name"])
+        self.assertEqual(p["code"], "")  # 假 AI 回的代號不在文件裡：不收
+        self.assertEqual(p["risk"], "")
+        self.assertTrue(all(isinstance(v, str) for v in p.values()))
+        self.assertTrue(js["model"])
+        # 文字太少、沒給文字：不問 AI
+        for body in ({"text": "太短", "filename": "a.txt"}, {"filename": "a.txt"}, {"text": ["x"] * 50}, {"text": " \n " * 200}):
+            st, js, data = self.post("/api/editor/product", body)
+            self.assertEqual(st, 400, data[:200])
+        # 很長的文件：只送前面一段，照樣有結果
+        st, js, data = self.post("/api/editor/product", {"text": doc + "字" * 60000, "filename": "x" * 500})
+        self.assertEqual(st, 200, data[:300])
+        # AI 塞車：回報原因，不是當掉
+        self.gm_control({"busy": 503})
+        try:
+            st, js, data = self.post("/api/editor/product", {"text": doc, "filename": "a.txt"})
+            self.assertEqual(st, 502, data[:300])
+            self.assertTrue(js.get("error"))
+        finally:
+            self.gm_control({"busy": 0})
+
+    def gm_control(self, knobs):
+        u = http.client.HTTPConnection("127.0.0.1", int(self.gm.url.rsplit(":", 1)[1]), timeout=10)
+        u.request("POST", "/__control", body=json.dumps(knobs).encode("utf-8"), headers={"Content-Type": "application/json"})
+        u.getresponse().read()
+        u.close()
+
+
+FIELD_KEYS = re.search(r"const FK = \[([^\]]+)\]", (_util.ROOT / "web" / "arena.js").read_text("utf-8")).group(1)
+FIELD_KEYS = re.findall(r"'([a-z]+)'", FIELD_KEYS)
+
+PROBE = r'''
+import json, sys
+sys.path.insert(0, ".")
+import server
+
+doc = """美元計價 6 個月期 FCN 條件書
+ISIN：XS1234567890   風險等級：RR 4
+連結標的：NVDA、TSLA
+配息率：年化 12.00%，每月配息
+天期：6 個月（到期日 2027年5月20日）
+履約價：期初價格的 85%　下限價：期初價格的 ６５％
+最低申購金額 USD 10,000"""
+ai = {
+    "type": "fcn", "name": "美元計價 6 個月期 FCN\n", "issuer": "", "code": "XS1234567890", "ccy": "美元 USD", "risk": "rr4",
+    "under": "NVDA、TSLA", "coupon": "年化 12%，每月配息", "tenor": "6 個月（2027/05/20 到期）", "strike": "期初價格的 85%",
+    "rating": "", "call": "每月觀察，全部標的高於期初價 100% 就提前出場", "ki": "期初價格的 65%", "extra": "最低申購金額 USD 10000",
+    "risks": ["非保本", "非保本", "", 5, "匯率風險" * 60] + ["風險 %d" % i for i in range(20)],
+}
+out = {"keys": list(server.PRODUCT_KEYS) + ["risks"], "types": list(server.PRODUCT_TYPES)}
+out["ok"] = server.clean_product(ai, "FCN.pdf\n" + doc)
+out["bad"] = server.clean_product(dict(ai, type="stock", code="US0000000000", risk="RR2", coupon="年化 15%", ki="期初價格的 60%",
+                                       name={"x": 1}, risks="不是清單"), "FCN.pdf\n" + doc)
+try:
+    server.clean_product(["x"], doc)
+    out["not_dict"] = "accepted"
+except server.Invalid:
+    out["not_dict"] = "rejected"
+out["schema"] = sorted(server.PRODUCT_SCHEMA["required"]) == sorted(server.PRODUCT_SCHEMA["properties"])
+out["in_prompt"] = [k for k in out["keys"] + ["type"] if ("- " + k + "：") not in server.PRODUCT_PROMPT]
+print(json.dumps(out, ensure_ascii=False))
+'''
+
+
+class ProductCleanTests(unittest.TestCase):
+    """AI 整理出來的商品欄位：代號、風險等級、條件裡的數字，文件裡找不到就不收。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.dir = _util.copy_project()
+        r = subprocess.run([sys.executable, "-c", PROBE], cwd=str(cls.dir), env=_util.clean_env({}), capture_output=True, timeout=60)
+        if r.returncode != 0:
+            raise AssertionError(r.stderr.decode("utf-8", "replace")[-1500:])
+        cls.out = json.loads(r.stdout.decode("utf-8"))
+
+    def test_fields_match_the_page(self):
+        self.assertEqual(sorted(self.out["keys"]), sorted(FIELD_KEYS))
+        self.assertEqual(self.out["types"], ["fcn", "bond", "fund", "custom"])
+        self.assertTrue(self.out["schema"])
+        self.assertEqual(self.out["in_prompt"], [])
+
+    def test_values_found_in_document_are_kept(self):
+        p = self.out["ok"]
+        self.assertEqual(p["type"], "fcn")
+        self.assertEqual(p["name"], "美元計價 6 個月期 FCN")
+        self.assertEqual(p["code"], "XS1234567890")
+        self.assertEqual(p["risk"], "RR4")  # 文件寫「RR 4」、AI 回「rr4」
+        self.assertEqual(p["coupon"], "年化 12%，每月配息")  # 文件是 12.00%
+        self.assertEqual(p["tenor"], "6 個月（2027/05/20 到期）")  # 文件是 2027年5月20日
+        self.assertEqual(p["ki"], "期初價格的 65%")  # 文件是全形的 ６５％
+        self.assertEqual(p["extra"], "最低申購金額 USD 10000")
+        self.assertEqual(p["call"], "")  # 「100%」文件裡沒有：整格不收
+        lines = p["risks"].split("\n")
+        self.assertEqual(lines[0], "非保本")
+        self.assertEqual(len(lines), 8)
+        self.assertEqual(len(set(lines)), 8)
+        self.assertTrue(all(len(x) <= 120 for x in lines))
+
+    def test_made_up_values_are_dropped(self):
+        p = self.out["bad"]
+        self.assertEqual(p["type"], "")
+        self.assertEqual(p["code"], "")
+        self.assertEqual(p["risk"], "")
+        self.assertEqual(p["coupon"], "")
+        self.assertEqual(p["ki"], "")
+        self.assertEqual(p["name"], "")
+        self.assertEqual(p["risks"], "")
+        self.assertEqual(p["strike"], "期初價格的 85%")
+        self.assertEqual(self.out["not_dict"], "rejected")
 
 
 if __name__ == "__main__":

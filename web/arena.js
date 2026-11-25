@@ -773,7 +773,8 @@ const Arena = (() => {
   let H = null; // app.js 給的工具：api、toast、go、show、setNav、reloadScenarios、startCall、avatarSVG、openEditor、scenario
   const WINDOW_KEY = 'aicoach.arenaWindow';
   // up、ctrl、note、cands 是上傳商品檔用的：第幾次上傳、還在等的 AI 請求、上傳框下面那行字、文件裡有好幾檔商品時的清單
-  const W = { step: 1, raw: null, phrases: [], editId: '', saved: null, base: null, dirty: false, busy: false, gen: 0, up: 0, ctrl: null, note: null, cands: null };
+  // tpl 不是 null 的時候，這一頁是在編輯「商品範本」（不是三步驟）：上半部沿用第一步的商品欄位，下半部是給教練當標準的內容
+  const W = { step: 1, raw: null, phrases: [], editId: '', saved: null, base: null, dirty: false, busy: false, gen: 0, up: 0, ctrl: null, note: null, cands: null, tpl: null };
   const $id = (id) => document.getElementById(id);
   const today = () => new Date().toLocaleDateString('zh-TW');
   const stamp = () => new Date().toISOString().slice(0, 10);
@@ -917,7 +918,10 @@ const Arena = (() => {
     const sel = $id('wzPick');
     if (!c || !c.list[i] || i === c.pick) return;
     readForm();
-    if (FK.some((k) => W.raw.p[k] !== c.shown[k]) && !window.confirm('換一檔會把下面改過的欄位換成那一檔的內容，要換嗎？')) { if (sel) sel.value = String(c.pick); return; }
+    const edited = FK.some((k) => W.raw.p[k] !== c.shown[k]);
+    const ask = W.tpl && tplHasStd() ? '換一檔會把商品欄位換成那一檔的內容，下面「給教練當標準的內容」也會清空（那是照現在這一檔寫的）。要換嗎？'
+      : edited ? '換一檔會把下面改過的欄位換成那一檔的內容，要換嗎？' : '';
+    if (ask && !window.confirm(ask)) { if (sel) sel.value = String(c.pick); return; }
     const target = productTarget(c.base, c.list[i]);
     applyType(W.raw, target.type);
     W.raw.p = { ...target.p };
@@ -925,15 +929,26 @@ const Arena = (() => {
     c.shown = { ...target.p };
     W.dirty = true;
     setNote(`這份文件有 ${c.list.length} 檔商品，現在填的是「${target.p.name}」，請核對後修改。`);
+    if (W.tpl && tplHasStd()) { // 範本下半部是照上一檔寫的：換了一檔就不能留著
+      Object.assign(W.tpl, { points: '', qa: [], donts: '', note: '已經換成另一檔商品，下面三欄清空了，請按「AI 幫我寫」重寫。' });
+      W.tpl.gen += 1;
+      W.tpl.busy = false;
+    }
     render();
   }
 
   // 上傳商品檔：1. 讀出文字 → 2. 檔名和規則先帶入（馬上看得到）→ 3. AI 讀內容，讀到的補上去（不只一檔就給下拉選單）
   async function takeFile(f) {
-    if (!f || !$id('wzFileInfo')) return;
+    const got = await readFile(f);
+    // 編輯商品範本時：AI 讀完商品資料，下半部（白話重點、常見質疑、不能說的話）還是空的，就接著請 AI 寫草稿。
+    // 文件裡有好幾檔商品時先不寫：等使用者用選單選好是哪一檔，再自己按「AI 幫我寫」
+    if (got && W.tpl && got.up === W.up && !got.multi && !tplHasStd()) tplAi(true);
+  }
+  async function readFile(f) {
+    if (!f || !$id('wzFileInfo')) return null;
     const ext = f.name.split('.').pop().toLowerCase();
-    if (!['txt', 'pdf', 'docx'].includes(ext)) { setNote(`不支援的格式：${f.name}（請用 .docx、.txt、.pdf）`); return; }
-    if (f.size > FILE_MAX) { setNote(`「${f.name}」太大了（最多 20 MB）。`); return; }
+    if (!['txt', 'pdf', 'docx'].includes(ext)) { setNote(`不支援的格式：${f.name}（請用 .docx、.txt、.pdf）`); return null; }
+    if (f.size > FILE_MAX) { setNote(`「${f.name}」太大了（最多 20 MB）。`); return null; }
     dropUpload();
     const my = W.up;
     W.cands = null;
@@ -946,7 +961,7 @@ const Arena = (() => {
       else if (ext === 'docx') pages = [await readDocx(f)];
       else ({ pages, why } = await readPdf(f));
     } catch { pages = []; }
-    if (my !== W.up) return;
+    if (my !== W.up) return null;
     pages = pages.map(fixCjk);
     const text = pickText(pages, DOC_TEXT_MAX); // 送給 AI 的那一段
     const o = parseProduct(ruleText(pages), f.name); // 規則：馬上有結果，AI 讀完之前先看到的
@@ -954,11 +969,12 @@ const Arena = (() => {
     FK.forEach((k) => { W.raw.p[k] = o[k] ? (k === 'risks' ? many(o[k], 1200) : one(o[k], k === 'name' ? 60 : 200)) : ''; });
     if (o.type) applyType(W.raw, o.type);
     W.dirty = true;
+    if (W.tpl) Object.assign(W.tpl, { text, source: one(f.name, 120) }); // 範本：文件的字留著，等一下請 AI 寫草稿時一起給它看（只留在這一頁，不存）
     const filled = () => fieldsOf(W.raw.type).filter(([k]) => W.raw.p[k]).length;
     if (text.replace(/\s+/g, '').length < AI_TEXT_MIN) {
       setNote(`「${f.name}」${why}，先用檔名當商品名稱，其他欄位請手動填。`);
       render();
-      return;
+      return null;
     }
     const done = `已從「${f.name}」帶入 ${filled()} 個欄位，請核對後修改。`;
     setNote(`已從「${f.name}」帶入 ${filled()} 個欄位，AI 正在讀內容，讀完會自動補上（大約 10～30 秒）…`, true, done);
@@ -971,12 +987,12 @@ const Arena = (() => {
     let err = '';
     try { d = await H.api('/api/editor/product', { text, filename: f.name }, ctrl.signal); } catch (e) { err = e.name === 'AbortError' ? 'AI 讀太久' : (e.message || 'AI 沒有回應'); }
     clearTimeout(timer);
-    if (my !== W.up) return; // 又傳了一個，或已經離開第一步：這份結果不用了
+    if (my !== W.up) return null; // 又傳了一個，或已經離開第一步：這份結果不用了
     W.ctrl = null;
-    if (!d) { setNote(`已從「${f.name}」帶入 ${filled()} 個欄位（${err}，這次沒有用到 AI），請核對後手動補上。`); return; }
+    if (!d) { setNote(`已從「${f.name}」帶入 ${filled()} 個欄位（${err}，這次沒有用到 AI），請核對後手動補上。`); return null; }
     readForm(); // 等的時候使用者可能改了幾格：先收回來，改過的不蓋
     const list = aiProducts(d);
-    if (!list.length) { setNote(`${done.slice(0, -1)}（AI 也讀過了，沒有讀到要補的）。`); return; }
+    if (!list.length) { setNote(`${done.slice(0, -1)}（AI 也讀過了，沒有讀到要補的）。`); return { up: my, multi: false }; }
     const multi = list.length > 1;
     const before = JSON.stringify([W.raw.type, W.raw.p]);
     mergeProduct(W.raw, snap, list[0]);
@@ -985,15 +1001,20 @@ const Arena = (() => {
       : before !== JSON.stringify([W.raw.type, W.raw.p]) ? `AI 已讀完「${f.name}」，帶入 ${filled()} 個欄位，請核對後修改。`
         : `${done.slice(0, -1)}（AI 也讀過了，沒有要補的）。`);
     render();
+    return { up: my, multi };
   }
 
-  // ---- 把畫面上的值收回 W.raw
+  // ---- 把畫面上的值收回 W.raw（編輯範本時，下半部收回 W.tpl）
   function readForm() {
     const box = $id('wizardBody');
     if (!box || !W.raw) return;
     box.querySelectorAll('[data-p]').forEach((e) => { W.raw.p[e.dataset.p] = e.value; });
     box.querySelectorAll('[data-c]').forEach((e) => { W.raw.c[e.dataset.c] = e.value; });
     box.querySelectorAll('[data-w]').forEach((e) => { W.raw.w[e.dataset.w] = e.value; });
+    if (!W.tpl) return;
+    box.querySelectorAll('[data-t]').forEach((e) => { W.tpl[e.dataset.t] = e.value; });
+    const rows = [...box.querySelectorAll('.tpl-qa-row')].map((r) => ({ q: r.querySelector('[data-qa="q"]').value, a: r.querySelector('[data-qa="a"]').value }));
+    if (rows.length) W.tpl.qa = rows; // 空的那幾組先留著（存的時候才拿掉），畫面上第幾組才對得上
   }
   const readOutline = () => {
     const pick = (k) => [...document.querySelectorAll(`#wizardBody [data-ol="${k}"] li`)].map((li) => li.textContent.trim()).filter(Boolean);
@@ -1009,7 +1030,15 @@ const Arena = (() => {
   const field = (attr, key, label, value, { wide = false, max = 200, ph = '', req = false } = {}) =>
     `<label class="field${wide ? ' wide' : ''}"><span>${label}${req ? ' <em class="wz-req">*</em>' : ''}</span><input type="text" ${attr}="${key}" maxlength="${max}" value="${esc(value)}" placeholder="${esc(ph)}" autocomplete="off" spellcheck="false"></label>`;
 
-  function step1() {
+  const step1 = () => `${productForm()}
+      <p class="wz-msg" id="wzMsg" role="alert"></p>
+      <div class="form-foot">
+        ${W.editId ? '' : '<button class="pill ghost" type="button" data-act="blank">改用空白表單（進階）</button>'}
+        <button class="pill primary" type="button" data-act="next">下一步：客戶人設</button>
+      </div>`;
+
+  // 商品類型、上傳商品檔、商品欄位：三步驟的第一步和「商品範本」共用
+  function productForm() {
     const r = W.raw;
     const ph = PH[r.type];
     return `<div class="field"><span>商品類型</span><div class="seg" role="group" aria-label="商品類型">${Object.entries(TYPES).map(([k, t]) =>
@@ -1025,12 +1054,138 @@ const Arena = (() => {
           <small class="muted">留空時，會套用這類商品通用的必揭露風險。</small></label>`;
         }
         return field('data-p', k, label, r.p[k], { wide: k === 'name' || k === 'extra' || k === 'under', max: k === 'name' ? 60 : 200, ph: ph[k] || '', req: k === 'name' });
-      }).join('')}</div>
+      }).join('')}</div>`;
+  }
+
+  // ---- 商品範本：一檔商品一份。上半部是商品資料，下半部是給教練當標準的內容（白話重點、常見質疑和建議回應、不能說的話）和審核狀態
+  const REVIEWER_KEY = 'aicoach.reviewer';
+  const TPL_QA_MAX = 10;
+  const TPL_NOTE0 = '上傳商品檔之後 AI 會接著寫這三欄；也可以自己填，或按右邊的按鈕。';
+  const tplLines = (s) => String(s || '').split('\n').map((x) => one(x, 200)).filter(Boolean);
+  const tplHasStd = () => !!W.tpl && !!(W.tpl.points.trim() || W.tpl.donts.trim() || W.tpl.qa.some((x) => x.q.trim() || x.a.trim()));
+  const tplDay = (iso) => { const d = new Date(iso); return Number.isNaN(d.getTime()) ? '' : d.toLocaleDateString('zh-TW'); };
+  const infoTip = (id, label, text) => `<button class="info-btn" type="button" aria-expanded="false" aria-controls="${id}" aria-label="說明：${esc(label)}">${H.icon('info')}</button>`
+    + `<p class="info-pop" id="${id}" hidden>${text}</p>`;
+
+  // 要存的（或要給 AI 看的）範本內容。必揭露風險沒填就帶入這類商品通用的：存下來的範本要看得到完整的風險清單，審核的人才有東西可以審
+  function tplBody() {
+    const r = W.raw;
+    const t = W.tpl;
+    const p = {};
+    fieldsOf(r.type).forEach(([k]) => { p[k] = k === 'risks' ? many(r.p.risks, 1200) : one(r.p[k], k === 'name' ? 60 : 200); });
+    if (!p.risks.trim()) p.risks = RISK_DEF[r.type].join('\n');
+    return {
+      type: r.type, p, points: tplLines(t.points), donts: tplLines(t.donts), source: t.source || '',
+      qa: t.qa.map((x) => ({ q: one(x.q, 80), a: one(x.a, 300) })).filter((x) => x.q || x.a),
+    };
+  }
+
+  function tplPage() {
+    const t = W.tpl;
+    const ok = t.review?.status === 'approved';
+    const qa = t.qa.length ? t.qa : [{ q: '', a: '' }];
+    return `${productForm()}
+      <h2 class="tpl-h2">給教練當標準的內容${infoTip('tplStdInfo', '給教練當標準的內容',
+    '對練時，AI 教練會拿這三欄當標準，判斷業務講得對不對；AI 寫情境時也會參考。AI 先寫草稿，公司審核的人再修改。')}</h2>
+      <div class="tpl-ai"><span class="muted${t.busy ? ' busy' : ''}" id="tplAiNote" aria-live="polite">${esc(t.note || TPL_NOTE0)}</span>
+        <button class="pill sm" type="button" data-act="tpl-ai"${t.busy ? ' disabled' : ''}>${tplHasStd() ? '請 AI 重寫' : 'AI 幫我寫'}</button></div>
+      <label class="field wide"><span>白話重點</span>
+        <textarea data-t="points" rows="4" maxlength="800" placeholder="一行一句，業務可以直接對客戶說的話。例：這是把錢交給投信買一籃子公司債，每個月配息一次。">${esc(t.points)}</textarea></label>
+      <div class="field wide"><span>客戶常見的質疑和建議回應</span>
+        <div class="tpl-qa">${qa.map((x, i) => `<div class="tpl-qa-row" data-i="${i}">
+          <input type="text" data-qa="q" maxlength="80" value="${esc(x.q)}" placeholder="客戶會怎麼問" aria-label="第 ${i + 1} 組：客戶的質疑" autocomplete="off">
+          <textarea data-qa="a" rows="2" maxlength="300" placeholder="建議業務怎麼回" aria-label="第 ${i + 1} 組：建議回應">${esc(x.a)}</textarea>
+          <button class="pill sm ghost" type="button" data-act="tpl-qa-del">刪除</button></div>`).join('')}</div>
+        ${qa.length < TPL_QA_MAX ? '<div><button class="pill sm ghost" type="button" data-act="tpl-qa-add">＋ 加一組</button></div>' : ''}</div>
+      <label class="field wide"><span>這檔商品不能說的話</span>
+        <textarea data-t="donts" rows="4" maxlength="900" placeholder="一行一條。例：不能把來自收益平準金的配息說成獲利。">${esc(t.donts)}</textarea></label>
+      <h2 class="tpl-h2">審核${infoTip('tplReviewInfo', '審核',
+    '未審核的範本一樣可以拿來對練，畫面上會標「未審核」。審核通過之後，只要內容有改，就會回到未審核。')}</h2>
+      <div class="tpl-review">
+        <span class="tag ${ok ? 'green' : 'amber'}">${ok ? '已審核' : '未審核'}</span>
+        <span class="muted">${ok ? `${esc(t.review.by)}　${esc(tplDay(t.review.at))}` : '還沒有人審核'}</span>
+        <label class="field"><span>審核人</span><input type="text" data-t="by" maxlength="20" value="${esc(t.by)}" placeholder="要按「儲存並審核通過」才需要填" autocomplete="off"></label>
+      </div>
       <p class="wz-msg" id="wzMsg" role="alert"></p>
       <div class="form-foot">
-        ${W.editId ? '' : '<button class="pill ghost" type="button" data-act="blank">改用空白表單（進階）</button>'}
-        <button class="pill primary" type="button" data-act="next">下一步：客戶人設</button>
+        <button class="pill ghost" type="button" data-act="list">取消</button>
+        <button class="pill" type="button" data-act="tpl-save">儲存</button>
+        <button class="pill primary" type="button" data-act="tpl-approve">儲存並審核通過</button>
       </div>`;
+  }
+
+  // 請 AI 寫範本下半部的草稿。auto：剛上傳完商品檔自動接著寫（這時三欄都是空的，不用問）
+  async function tplAi(auto = false) {
+    const t = W.tpl;
+    if (!t || t.busy) return;
+    readForm();
+    if (!W.raw.p.name.trim()) { msg('請先填商品名稱，或上傳商品檔。'); return; }
+    if (!auto && tplHasStd() && !window.confirm('AI 會重寫「白話重點、常見質疑、不能說的話」，現在的內容會被換掉。要繼續嗎？')) return;
+    t.gen += 1;
+    const my = t.gen;
+    Object.assign(t, { busy: true, note: 'AI 正在寫白話重點、常見質疑和不能說的話（大約 10～30 秒）…' });
+    render();
+    let d = null;
+    let err = '';
+    try { d = await H.api('/api/template/draft', { template: tplBody(), text: t.text || '' }); } catch (e) { err = e.message || 'AI 沒有回應'; }
+    if (W.tpl !== t || my !== t.gen) return; // 已經離開這一頁，或換了一檔商品：這份草稿不用了
+    readForm(); // 等的時候使用者可能改了上面的欄位：先收回來
+    t.busy = false;
+    if (!d?.draft) {
+      t.note = `AI 這次沒寫出來（${err || '內容不完整'}），可以再按一次，或自己填。`;
+    } else {
+      Object.assign(t, { points: d.draft.points.join('\n'), qa: d.draft.qa.map((x) => ({ q: x.q, a: x.a })), donts: d.draft.donts.join('\n'),
+        note: 'AI 寫好草稿了，請核對後修改。' });
+      W.dirty = true;
+    }
+    render();
+  }
+
+  async function tplSave(approve) {
+    const t = W.tpl;
+    if (!t || W.busy) return;
+    readForm();
+    const focus = (sel) => $id('wizardBody')?.querySelector(sel)?.focus();
+    if (W.raw.p.name.trim().length < 2) { msg('請填商品名稱（至少 2 個字）。'); focus('[data-p="name"]'); return; }
+    const by = one(t.by, 20);
+    if (approve && !by) { msg('請先填審核人，再按「儲存並審核通過」。'); focus('[data-t="by"]'); return; }
+    W.busy = true;
+    try {
+      const d = await H.api('/api/template/save', { id: t.id || undefined, template: tplBody(), approve, by });
+      if (approve) { try { localStorage.setItem(REVIEWER_KEY, by); } catch { /* 存不了就下次再填 */ } }
+      W.dirty = false;
+      H.toast(d.template?.review?.status === 'approved' ? '已儲存（已審核）' : '已儲存（未審核）', 'info', 2500);
+      H.go('scenarios');
+    } catch (err) {
+      msg(err.message || '儲存失敗');
+      H.toast(esc(err.message || '儲存失敗'), 'error', 7000, '還不能儲存');
+    } finally {
+      W.busy = false;
+    }
+  }
+
+  // 新增（id 空白）或打開一份商品範本
+  async function openTemplate(id = '') {
+    W.gen += 1;
+    const my = W.gen;
+    dropUpload();
+    let by = '';
+    try { by = localStorage.getItem(REVIEWER_KEY) || ''; } catch { /* 讀不到就空白 */ }
+    const tpl = { id: '', points: '', qa: [], donts: '', review: { status: 'draft', by: '', at: '' }, text: '', source: '', busy: false, note: '', by, gen: 0 };
+    const raw = blankRaw();
+    if (id) {
+      let t;
+      try { t = (await H.api('/api/template/get', { id })).template; } catch (err) { H.toast(esc(err.message), 'error', 6000, '打不開這份範本'); return; }
+      if (my !== W.gen) return;
+      raw.type = TYPES[t.type] ? t.type : 'custom';
+      FK.forEach((k) => { raw.p[k] = String(t.p?.[k] || ''); });
+      Object.assign(tpl, { id: t.id, points: (t.points || []).join('\n'), qa: (t.qa || []).map((x) => ({ q: String(x.q || ''), a: String(x.a || '') })),
+        donts: (t.donts || []).join('\n'), review: t.review || tpl.review, source: t.source || '' });
+    }
+    Object.assign(W, { step: 1, raw, phrases: [...PHRASES], editId: '', saved: null, base: null, dirty: false, busy: false, ol: null, note: null, cands: null, tpl });
+    render();
+    H.show('wizard');
+    H.setNav('scenarios');
   }
 
   function step2() {
@@ -1097,6 +1252,11 @@ const Arena = (() => {
   function render() {
     const box = $id('wizardBody');
     if (!box) return;
+    if (W.tpl) {
+      $id('wizardTitle').textContent = W.tpl.id ? '修改商品範本' : '新增商品範本';
+      box.innerHTML = tplPage();
+      return;
+    }
     $id('wizardTitle').textContent = W.step === 4 ? 'Role Play 劇本' : W.editId ? '修改情境' : '新增情境';
     box.innerHTML = W.step === 4 ? result() : stepsBar() + [null, step1, step2, step3][W.step]();
   }
@@ -1202,6 +1362,24 @@ const Arena = (() => {
     if (act === 'phrase') { const t = b.dataset.v; r.ph = r.ph.includes(t) ? r.ph.filter((x) => x !== t) : r.ph.concat(t); b.classList.toggle('on'); b.setAttribute('aria-pressed', String(r.ph.includes(t))); W.dirty = true; return; }
     if (act === 'diff') { readForm(); r.d = Number(b.dataset.v); W.dirty = true; render(); return; }
     if (act === 'save') { save(); return; }
+    // ---- 商品範本
+    if (act === 'tpl-ai') { tplAi(); return; }
+    if (act === 'tpl-save') { tplSave(false); return; }
+    if (act === 'tpl-approve') { tplSave(true); return; }
+    if (act === 'tpl-qa-add') {
+      readForm();
+      if (W.tpl.qa.length < TPL_QA_MAX) W.tpl.qa.push({ q: '', a: '' });
+      render();
+      $id('wizardBody').querySelector('.tpl-qa-row:last-child [data-qa="q"]')?.focus();
+      return;
+    }
+    if (act === 'tpl-qa-del') {
+      readForm(); // 畫面上有幾組，W.tpl.qa 就有幾組（空的也算），第幾組才對得上
+      W.tpl.qa.splice(Number(b.closest('.tpl-qa-row').dataset.i), 1);
+      W.dirty = true;
+      render();
+      return;
+    }
     // ---- 劇本頁
     const s = W.saved;
     if (act === 'call') { if (confirmRows()) H.startCall(s.id); return; }
@@ -1268,7 +1446,7 @@ const Arena = (() => {
   async function open(id = '') {
     const my = ++W.gen;
     dropUpload();
-    Object.assign(W, { step: 1, raw: blankRaw(), phrases: [...PHRASES], editId: '', saved: null, base: null, dirty: false, busy: false, ol: null, note: null, cands: null });
+    Object.assign(W, { step: 1, raw: blankRaw(), phrases: [...PHRASES], editId: '', saved: null, base: null, dirty: false, busy: false, ol: null, note: null, cands: null, tpl: null });
     if (id) {
       let sc;
       try { sc = (await H.api('/api/editor/get', { id })).scenario; } catch (err) { H.toast(esc(err.message), 'error', 6000, '打不開這個情境'); return; }
@@ -1331,7 +1509,7 @@ const Arena = (() => {
     }
   }
 
-  return { ...logic, init, open, downloadDoc, exportFile, importFile, get dirty() { return W.dirty; }, discard() { W.dirty = false; dropUpload(); } };
+  return { ...logic, init, open, openTemplate, downloadDoc, exportFile, importFile, get dirty() { return W.dirty; }, discard() { W.dirty = false; dropUpload(); if (W.tpl) W.tpl.gen += 1; } };
 })();
 
 if (typeof module !== 'undefined' && module.exports) module.exports = Arena;

@@ -239,14 +239,30 @@
       <div class="page">
         <div class="page-head">
           <h1>情境設定</h1>
-          <div class="head-actions">
+          <div class="head-actions" data-pane="templates">
+            <button class="pill primary" id="btnNewTemplate" type="button"><span data-icon="plus"></span>新增範本</button>
+          </div>
+          <div class="head-actions" data-pane="scenarios" hidden>
             <button class="pill" id="btnImportScenario" type="button">匯入情境檔</button>
             <input type="file" id="importScenarioFile" accept=".json,application/json" hidden>
             <button class="pill primary" id="btnNewScenario" type="button"><span data-icon="plus"></span>新增情境</button>
           </div>
         </div>
-        <p class="page-sub">照三個步驟填商品和客戶人設，就能做出一個對練情境，存好之後首頁馬上可以練習。每個情境都可以下載 Word 劇本。</p>
-        <div class="list" id="scnAdminList"></div>
+        <!-- 兩種設定：商品範本（這檔商品該怎麼講，公司會審核）和對練情境（這次面對的客戶是誰、什麼狀況） -->
+        <div class="seg scn-tabs" id="scnTabs" role="tablist" aria-label="情境設定">
+          <button type="button" role="tab" id="scnTabTemplates" data-tab="templates" aria-controls="scnPaneTemplates" aria-selected="true" class="on">商品範本<span class="tab-n" id="tplCount"></span></button>
+          <button type="button" role="tab" id="scnTabScenarios" data-tab="scenarios" aria-controls="scnPaneScenarios" aria-selected="false" tabindex="-1">對練情境<span class="tab-n" id="scnCount"></span></button>
+        </div>
+        <div id="scnPaneTemplates" role="tabpanel" aria-labelledby="scnTabTemplates" data-pane="templates">
+          <p class="page-sub">一檔商品一份範本：上傳商品 DM 或說明書，AI 先填好，再由公司審核。
+            <button class="info-btn" type="button" aria-expanded="false" aria-controls="tplListInfo" aria-label="說明：商品範本"><span data-icon="info"></span></button></p>
+          <p class="info-pop" id="tplListInfo" hidden>範本講的是「這檔商品該怎麼講才對」：商品資料、必揭露風險、白話重點、常見質疑的建議回應、不能說的話。對練時 AI 教練拿它當標準。還沒審核的範本一樣可以用，畫面上會標「未審核」。</p>
+          <div class="list" id="tplAdminList"></div>
+        </div>
+        <div id="scnPaneScenarios" role="tabpanel" aria-labelledby="scnTabScenarios" data-pane="scenarios" hidden>
+          <p class="page-sub">照三個步驟填商品和客戶人設，就能做出一個對練情境，存好之後首頁馬上可以練習。每個情境都可以下載 Word 劇本。</p>
+          <div class="list" id="scnAdminList"></div>
+        </div>
       </div>
     </section>
 

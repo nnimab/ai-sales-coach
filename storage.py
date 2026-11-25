@@ -249,6 +249,8 @@ class FileStore(_Local, Store):
             return self.voices_path
         if name == "live_link":  # 真人版（RunPod）最近回報的網址
             return self.root / "live_link.json"
+        if name == "templates":  # 商品範本（全部存在一份文件裡）
+            return self.root / "templates.json"
         name = str(name)
         if name == "profile" or name.startswith("profile:"):
             uid = name.partition(":")[2]

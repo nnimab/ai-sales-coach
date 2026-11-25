@@ -107,7 +107,10 @@ class H(Handler):
     def chat(self, body, k):
         fmt = body.get("response_format") or {}
         if fmt.get("type") == "json_schema":
-            text = json.dumps(sample((fmt.get("json_schema") or {}).get("schema") or {}), ensure_ascii=False)
+            # 測試可以用 /__control {"json": {...}} 指定下一次要回的 JSON（照 schema 產生的只有「好」和空清單，測不到內容檢查）
+            canned = k.get("json")
+            made = canned if isinstance(canned, dict) else sample((fmt.get("json_schema") or {}).get("schema") or {})
+            text = json.dumps(made, ensure_ascii=False)
         elif fmt.get("type") == "json_object":
             text = "{}"
         else:

@@ -225,6 +225,90 @@ test('上傳商品檔：文件裡沒寫名稱時，用檔名當商品名稱', ()
   assert.equal(Arena.nameFromFile(''), '');
 });
 
+test('上傳商品檔：幣別不用猜，風險只收一項一項的短句', () => {
+  // 投資美元債的台幣計價基金：以前看到「美元」就填美元 USD，現在沒明寫就留空
+  const deck = Arena.parseProduct('富邦優選收益傘型基金\n主要投資於投資等級美元公司債\n投資人應謹慎考量本身之需求與投資風險，本公司恕不負任何可能之損害責任\n級之高風險債券且配息來源可能為收\n動態調整 管控風險 理出最適', '傘型基金.pdf');
+  assert.equal(deck.ccy, '');
+  assert.equal(deck.risks, ''); // 句子中間剛好有「風險」兩個字的不算
+  assert.equal(Arena.parseProduct('計價幣別：新台幣', 'x.pdf').ccy, '新台幣');
+  assert.equal(Arena.parseProduct('基金小檔案\n計價幣別 新台幣\n風險收益等級 RR2', 'x.pdf').ccy, '新台幣');
+  // 表格一行有兩組「欄位 內容」：只取到下一個欄位名稱前面
+  const two = Arena.parseProduct('基金小檔案\n基金類型 主動式交易所交易基金 追蹤指標 無參考指標\n計價幣別 新台幣 風險收益等級 RR2(註)\n收益分配 月配息', '某某基金.pdf');
+  assert.equal(two.ccy, '新台幣');
+  assert.equal(two.tenor, '主動式交易所交易基金');
+  assert.equal(two.risk, 'RR2');
+  // 債券 ETF：檔名有「債」字，但開頭提到 ETF 或投信，算基金，不算海外債
+  assert.equal(Arena.parseProduct('證券代號：00985B\n資料來源：群益投信整理', '群益ESG投等債0-5年期00985B.pdf').type, 'fund');
+  assert.equal(Arena.parseProduct('富邦環球動態入息投資級債主動式ETF', '傘型.pdf').type, 'fund');
+  assert.equal(Arena.parseProduct('票面利率：5.5%', '某某公司美元債.pdf').type, 'bond');
+  // 頁數多的文件：規則只看第一頁和規格最密的頁，圖表頁的「平均票息率：7.1%」「發行人 債券名稱 到期」不會被當成欄位
+  const pages = ['某某傘型基金\n2025年8月', '發行人 債券名稱 到期 殖利率%\n甲骨文 ORCL 5.55 02/06/53', '基金模擬投資組合\n平均票息率：7.1%', '市場展望', '基金小檔案\n計價幣別 新台幣 風險收益等級 RR2\n收益分配 月配息\n經理費 0.55%'];
+  const r = Arena.parseProduct(Arena.ruleText(pages), '某某傘型基金.pdf');
+  assert.equal(r.issuer, '');
+  assert.equal(r.coupon, '月配息'); // 規格頁上的「收益分配 月配息」，不是圖表頁的 7.1%
+  assert.equal(r.ccy, '新台幣');
+  // 封面寫「預計第一次配息:11月底」、規格頁寫「收益分配 …每月配息」：用規格頁那個
+  assert.equal(Arena.parseProduct('預計第一次配息:11月底\nETF小檔案\n收益分配 本基金成立日起滿45日(含)後，採每月配息', 'x.pdf').coupon, '本基金成立日起滿45日(含)後，採每月配息');
+  assert.equal(Arena.ruleText(['一頁', '兩頁']), '一頁\n兩頁'); // 頁數少：整份都看
+});
+
+test('上傳商品檔：文件很長時，挑有規格的頁面給 AI', () => {
+  const head = '僅供內部教育訓練使用、不得作為其他用途或對外公開';
+  const slide = (n) => `${head}\n${n}\n市場展望第 ${n} 頁\n${`第 ${n} 頁的景氣循環與利率走勢說明文字。`.repeat(36)}`;
+  const spec = `${head}\n24\n基金小檔案\n證券簡稱 主動測試動態入息\n計價幣別 新台幣\n風險收益等級 RR2\n經理費 0.55%\n收益分配 月配息`;
+  const legal = (name) => `${head}\n【${name}】\n${'本基金經金管會同意生效，惟不表示本基金絕無風險。基金經理公司除盡善良管理人之注意義務外，不負責本基金之盈虧，亦不保證最低之收益，投資人申購前應詳閱基金公開說明書。其風險報酬等級為RR3。'.repeat(30)}`;
+  const pages = ['測試優選收益傘型基金\n2025年8月\n主動測試動態入息\n主動測試複合收益'].concat(Array.from({ length: 22 }, (_, i) => slide(i + 2)), [spec], [legal('測試優選收益傘型基金'), legal('別的基金 A'), legal('別的基金 B')]);
+  assert.equal(pages.length, 27);
+  const text = Arena.pickText(pages, 20000);
+  assert.ok(text.length <= 20000, String(text.length));
+  assert.ok(text.startsWith('【第 1 頁】\n測試優選收益傘型基金')); // 第一頁一定在
+  assert.ok(text.includes('【第 24 頁】\n基金小檔案') && text.includes('風險收益等級 RR2') && text.includes('計價幣別 新台幣')); // 規格頁在後面也挑得到
+  assert.ok(!text.includes(head)); // 每頁都有的頁首拿掉
+  assert.ok(!/\n24\n/.test(text)); // 單獨一行的頁碼拿掉
+  assert.ok(text.includes('【測試優選收益傘型基金】')); // 法律聲明只放第一頁
+  assert.ok(!text.includes('別的基金 A') && !text.includes('別的基金 B'));
+  assert.ok(text.indexOf('【第 2 頁】') < text.indexOf('【第 24 頁】') && text.indexOf('【第 24 頁】') < text.indexOf('【第 25 頁】')); // 照原本的頁次排
+  // 放得下就整份都送；空白頁不佔位置
+  const short = Arena.pickText(['第一頁', '', '第三頁\n計價幣別 美元'], 20000);
+  assert.equal(short, '【第 1 頁】\n第一頁\n【第 3 頁】\n第三頁\n計價幣別 美元');
+  // 只有一頁（Word、txt）：照原樣，太長就截掉
+  assert.equal(Arena.pickText(['商品名稱：某某'], 20000), '商品名稱：某某');
+  assert.equal(Arena.pickText(['字'.repeat(30000)], 20000).length, 20000);
+  assert.equal(Arena.pickText([], 20000), '');
+  // 很擠的時候：位置先給規格頁
+  const tight = Arena.pickText(pages, 1500);
+  assert.ok(tight.length <= 1500 && tight.includes('基金小檔案') && tight.includes('【第 1 頁】'));
+});
+
+test('上傳商品檔：文件裡有好幾檔商品', () => {
+  const blank = () => Object.fromEntries(Arena.FK.map((k) => [k, '']));
+  const d = { products: [
+    { type: 'fund', name: '主動測試動態入息', issuer: '測試投信', ccy: '新台幣', risk: 'RR2', coupon: '月配息', risks: '匯率風險' },
+    { type: 'fund', name: '主動測試複合收益', issuer: '測試投信', ccy: '新台幣', risk: 'RR2', coupon: '月配息', risks: '非投資等級債券風險' },
+    { type: 'fund', name: '主動測試動態入息', issuer: '重複的' },
+    { type: 'fund' }, 'x', null,
+  ] };
+  const list = Arena.aiProducts(d);
+  assert.deepEqual(list.map((c) => c.name), ['主動測試動態入息', '主動測試複合收益']); // 同名的、什麼都沒有的不算
+  assert.equal(Arena.aiProducts({ product: { name: '舊格式一檔' } }).length, 1); // 伺服器還是舊版時
+  assert.equal(Arena.aiProducts({ products: Array.from({ length: 9 }, (_, i) => ({ name: `第 ${i} 檔` })) }).length, 6);
+  assert.deepEqual(Arena.aiProducts(null), []);
+  // AI 有讀完就以 AI 為準：規則抓的不留（AI 沒寫的就空著）
+  const snap = { type: 'fund', p: { ...blank(), name: '傘型基金', code: 'LU1234567891', coupon: '規則抓的配息', risks: '規則抓的風險' } };
+  const second = Arena.productTarget(snap, list[1]);
+  assert.equal(second.p.name, '主動測試複合收益');
+  assert.equal(second.p.code, '');
+  assert.equal(second.p.ccy, '新台幣');
+  assert.equal(second.p.risks, '非投資等級債券風險');
+  // AI 連名稱都沒寫：留著原本的名稱（檔名）
+  assert.equal(Arena.productTarget(snap, { coupon: '月配息' }).p.name, '傘型基金');
+  // 併進表單：規則抓的被清掉也算改到；使用者改過的不動
+  const raw = { type: 'fund', ph: [], p: { ...snap.p, coupon: '我自己改的' } };
+  assert.equal(Arena.mergeProduct(raw, snap, list[0]), 6); // name、issuer、code（清空）、ccy、risk、risks
+  assert.equal(raw.p.coupon, '我自己改的');
+  assert.equal(raw.p.code, '');
+});
+
 test('上傳商品檔：AI 讀到的蓋過檔名和規則抓的，使用者自己改過的不動', () => {
   const blank = () => Object.fromEntries(Arena.FK.map((k) => [k, '']));
   const snap = { type: 'fcn', p: { ...blank(), name: '月報', coupon: '舊的配息' } };
@@ -241,15 +325,19 @@ test('上傳商品檔：AI 讀到的蓋過檔名和規則抓的，使用者自�
   assert.equal(raw.p.risks, '匯率風險\n\n流動性風險');
   assert.ok(!('bogus' in raw.p));
   assert.equal(n, 3);
-  // 使用者等的時候自己換了類型：AI 的類型不蓋，欄位照樣補
+  // 使用者等的時候自己換了類型：AI 的類型不蓋，欄位照樣換成 AI 的（AI 沒寫配息，規則抓的那個清掉）
   const raw2 = { type: 'bond', ph: [], p: { ...snap.p } };
-  assert.equal(Arena.mergeProduct(raw2, snap, { type: 'fund', name: '某某基金' }), 1);
+  assert.equal(Arena.mergeProduct(raw2, snap, { type: 'fund', name: '某某基金' }), 2);
   assert.equal(raw2.type, 'bond');
-  // AI 什麼都沒讀到，或回的東西不對：表單原樣
+  assert.equal(raw2.p.coupon, '');
+  // AI 什麼都沒讀到，或回的東西不對：表單原樣（不會把規則抓的清光）
   const raw3 = { type: 'fcn', ph: [], p: { ...snap.p } };
   assert.equal(Arena.mergeProduct(raw3, snap, Object.fromEntries(Arena.FK.map((k) => [k, '']))), 0);
   assert.equal(Arena.mergeProduct(raw3, snap, null), 0);
-  assert.equal(Arena.mergeProduct(raw3, snap, { type: 'nope', name: 123 }), 1); // 數字當成字收下，類型不認得就不換
+  assert.equal(Arena.mergeProduct(raw3, snap, { type: 'fund' }), 0);
+  assert.equal(raw3.p.coupon, '舊的配息');
+  assert.equal(raw3.type, 'fcn');
+  assert.equal(Arena.mergeProduct(raw3, snap, { type: 'nope', name: 123 }), 2); // 數字當成字收下，類型不認得就不換
   assert.equal(raw3.type, 'fcn');
 });
 

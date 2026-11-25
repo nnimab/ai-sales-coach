@@ -279,6 +279,55 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(self.public(self.sid)["template"], {"id": self.tid, "missing": True})  # 情境還在，只是標成範本不見了
 
 
+class EmptyAppTests(unittest.TestCase):
+    """內建情境已經從 App 拿掉：一個情境都沒有的時候，網站要照樣開得起來，可以從範本開始建。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.dir = _util.copy_project()
+        for f in (cls.dir / "scenarios").glob("*.json"):  # 測試用的專案會帶 samples 當內建情境：這裡拿掉，跟線上一樣
+            f.unlink()
+        cls.port = _util.free_port()
+        env = _util.clean_env({"APP_MODE": "cloud", "AUTH_MODE": "open", "APP_SECRET": APP_SECRET, "ALLOWED_HOSTS": "127.0.0.1",
+                               "LLM_PROVIDER": "gemini", "LIVE_ENABLED": "0", "GEMINI_API_KEY": "fake-gemini-key"})
+        cls.proc = _util.start_proc(["app.py", "--port", str(cls.port)], cls.dir, env, cls.dir / "cloud.log")
+        if not _util.wait_port(cls.port, 25):
+            cls.tearDownClass()
+            raise AssertionError("app.py 沒有啟動：" + (cls.dir / "cloud.log").read_text("utf-8", "replace")[-800:])
+
+    @classmethod
+    def tearDownClass(cls):
+        _util.stop_proc(getattr(cls, "proc", None))
+
+    def call(self, method, path, body=None, cookie=""):
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=60)
+        h = {"Host": f"127.0.0.1:{self.port}"}
+        if cookie:
+            h["Cookie"] = cookie
+        if body is not None:
+            h["Content-Type"] = "application/json"
+        conn.request(method, path, body=None if body is None else json.dumps(body).encode("utf-8"), headers=h)
+        r = conn.getresponse()
+        data = r.read()
+        conn.close()
+        return r.status, json.loads(data.decode("utf-8")), (r.getheader("Set-Cookie") or "").split(";", 1)[0]
+
+    def test_site_works_with_no_scenarios(self):
+        st, js, cookie = self.call("GET", "/api/status")
+        self.assertEqual(st, 200, js)
+        self.assertEqual(self.call("GET", "/api/scenarios", None, cookie)[:2], (200, {"scenarios": []}))
+        st, js, _ = self.call("POST", "/api/editor/list", {}, cookie)
+        self.assertEqual((st, js["scenarios"]), (200, []))
+        self.assertEqual(self.call("POST", "/api/template/list", {}, cookie)[:2], (200, {"templates": []}))
+        st, js, _ = self.call("POST", "/api/template/save", {"template": FUND}, cookie)
+        self.assertEqual(st, 200, js)
+
+    def test_repo_ships_no_builtin_scenarios(self):
+        self.assertEqual([f.name for f in (_util.ROOT / "scenarios").glob("*.json")], [])  # 這一層放了就會變成線上的內建情境
+        self.assertGreaterEqual(len(list((_util.ROOT / "scenarios" / "samples").glob("*.json"))), 15)  # 測試用的還在
+        self.assertNotIn("samples", (_util.ROOT / "vercel.json").read_text("utf-8"))  # samples 不部署
+
+
 PROBE = r'''
 import json, sys
 sys.path.insert(0, ".")

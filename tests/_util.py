@@ -96,7 +96,8 @@ def copy_project(dest=None):
         if (ROOT / name).is_dir():
             shutil.copytree(ROOT / name, dest / name, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
     (dest / "scenarios").mkdir(exist_ok=True)
-    for f in (ROOT / "scenarios").glob("*.json"):
+    # 內建情境已經從 App 拿掉（2026-11-25 改成「商品範本＋對練情境」），原本那 15 個留在 scenarios/samples 給測試當內建情境用
+    for f in (ROOT / "scenarios" / "samples").glob("*.json"):
         shutil.copy2(f, dest / "scenarios" / f.name)
     assert not (dest / ".env").exists()
     return dest

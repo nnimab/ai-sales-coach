@@ -31,6 +31,9 @@ def provider(pid, kind):
 
 class EvalDeadlineTests(unittest.TestCase):
     def setUp(self):
+        # 內建情境已經從 App 拿掉，原本的檔案在 scenarios/samples：這個測試直接用專案裡的 server，所以暫時把內建情境的位置指過去
+        self.addCleanup(setattr, server, "SCENARIO_DIR", server.SCENARIO_DIR)
+        server.SCENARIO_DIR = _util.ROOT / "scenarios" / "samples"
         self.sc = server.load_scenarios()["structured-suitability"]
         self.timeouts = []
 

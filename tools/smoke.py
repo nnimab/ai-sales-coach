@@ -129,7 +129,7 @@ def main():
 
     # V2：程式、情境檔、.env 不能被直接下載
     leaks = []
-    for path in ("/scenarios/01-dca-volatility.json", "/server.py", "/app.py", "/storage.py", "/.env", "/chatgpt_brain.py"):
+    for path in ("/scenarios/samples/01-dca-volatility.json", "/server.py", "/app.py", "/storage.py", "/.env", "/chatgpt_brain.py"):
         code, _, raw = site.call("GET", path)
         if code != 404 or b"server_only" in raw:
             leaks.append(f"{path}={code}")
@@ -139,7 +139,8 @@ def main():
     code, js, _ = site.call("GET", "/api/scenarios")
     scenarios = (js or {}).get("scenarios") or []
     if not scenarios:
-        report("V4", False, f"讀不到情境（HTTP {code}）")
+        # 內建情境已經拿掉：剛部署、還沒有人建情境時清單是空的，這不是錯，只是後面跟通話有關的檢查沒有東西可以測
+        report("V4", None if code == 200 else False, "還沒有對練情境，通話相關的檢查先略過" if code == 200 else f"讀不到情境（HTTP {code}）")
         return finish()
     sc = scenarios[0]
     chat = {"scenario_id": sc["id"], "messages": [{"role": "rep", "text": "您好，我是理專，想跟您聊聊最近的投資。"}]}

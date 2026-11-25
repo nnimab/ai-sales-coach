@@ -933,6 +933,12 @@ function diffDots(level) {
 }
 
 function renderHome() {
+  if (!state.scenarios.length) { // 還沒有人建情境（內建的已經拿掉）：告訴使用者去哪裡建
+    $('#scenarioGrid').innerHTML = `<div class="empty scn-empty"><b>還沒有對練情境</b>先建一份商品範本（上傳商品 DM，AI 會幫你填），再建對練情境，就可以在這裡開始練習。<br>
+      <button class="pill primary" type="button" id="btnHomeSetup">到情境設定</button></div>`;
+    $('#btnHomeSetup').addEventListener('click', () => go('scenarios'));
+    return;
+  }
   $('#scenarioGrid').innerHTML = state.scenarios.map((s) => {
     const outgoing = s.call_direction === 'outgoing';
     return `<article class="scn-card" data-id="${esc(s.id)}" tabindex="0">
@@ -1819,7 +1825,9 @@ const ScenarioAdmin = (() => {
     }
     $('#scnCount').textContent = meta.scenarios.length || '';
     if (!meta.scenarios.length) {
-      box.innerHTML = '<div class="empty"><b>還沒有情境</b>按右上角「新增情境」開始。</div>';
+      box.innerHTML = templates.length
+        ? '<div class="empty"><b>還沒有對練情境</b>按右上角「新增情境」：選一份商品範本、描述客戶，AI 會把情境填好。</div>'
+        : '<div class="empty"><b>還沒有對練情境</b>先到「商品範本」那一頁新增一份範本，再回來新增情境，AI 才知道要賣什麼。</div>';
       return;
     }
     box.innerHTML = meta.scenarios.map((s) => {
@@ -1916,6 +1924,8 @@ const ScenarioAdmin = (() => {
     fillTemplateSelect(sc.template_id || '');
     setLevel(sc.difficulty_level || 2);
     hideIdeas();
+    // 三種常見的客戶類型（原本三步驟的人設卡）：點一下把描述帶進去，可以再改
+    $('#aiQuick').innerHTML = `<span class="muted">常見類型：</span>${Arena.PERSONAS.map((p, i) => `<button class="pill sm ghost" type="button" data-i="${i}">${esc(p.title)}</button>`).join('')}`;
     $('#editorTitle').textContent = editingId ? '修改情境' : copyFrom ? '複製情境' : '新增情境';
     renderForm(sc, { openHidden: !id });
     show('editor');
@@ -2410,6 +2420,12 @@ const ScenarioAdmin = (() => {
     hideIdeas();
   });
   $('#aiLevel').addEventListener('click', (e) => { const b = e.target.closest('button'); if (b) setLevel(b.dataset.v); });
+  $('#aiQuick').addEventListener('click', (e) => {
+    const p = Arena.PERSONAS[Number(e.target.closest('button')?.dataset.i)];
+    if (!p) return;
+    $('#aiDesc').value = `${p.title}：${p.name}，${p.age} 歲，${p.job}，${p.asset}。${p.pain}。`;
+    $('#aiDesc').focus();
+  });
   $('#btnAiIdeas').addEventListener('click', aiIdeas);
   $('#aiIdeas').addEventListener('click', (e) => {
     const x = ideas[Number(e.target.closest('.idea')?.dataset.i)];

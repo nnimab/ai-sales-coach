@@ -461,18 +461,113 @@ const Arena = (() => {
     raw.ph = (raw.ph || []).filter((t) => fitsType(type, t) || !PHRASES.includes(t));
   }
 
-  // AI 讀完商品文件後併進表單：AI 有讀到的，蓋過檔名和規則抓的；等的這段時間使用者自己改過的欄位和類型不動。
-  // raw 是表單現在的內容，snap 是送去給 AI 之前的樣子，ai 是伺服器回的欄位。回傳 AI 改了幾格。
+  // 文件很長時挑哪幾頁給 AI。有規格字眼的頁面優先：每一組字眼算一次分（同一頁出現很多次也只算一次），再除以頁面長度，
+  // 字少而規格多的「基金小檔案」「主要條件」排最前面
+  const SPEC_WORDS = [
+    [5, /基金小檔案|商品條件|主要條件|發行條件|產品條件|商品摘要|基本資料|Term\s?Sheet|Key\s?Terms/i],
+    [4, /連結標的|履約價|下限價|敲入|敲出|提前出場|Knock|Strike|Autocall/i],
+    [3, /計價幣別|計價貨幣|幣別|Currency/i],
+    [3, /風險(?:收益|報酬)?等級|RR\s?[1-5]/i],
+    [2, /ISIN|代號|代碼/i],
+    [2, /配息|收益分配|票息|票面利率|Coupon/i],
+    [2, /經理費|保管費|手續費|買回|贖回/],
+    [2, /到期日|天期|年期|閉鎖期|Maturity|Tenor/i],
+    [2, /信用評等|發行機構|保證機構|基金公司|經理公司|Issuer/i],
+    [2, /基金類型|基金種類|商品類型/],
+  ];
+  // 簡報最後面那種落落長的法律聲明（常常是「其他商品」的警語，會讓 AI 搞混）：字多，而且這些套話出現兩種以上；
+  // 或是字很多、規格字眼卻很少的長篇說明。這種頁排最後，而且只放第一頁
+  const BOILER = [/公開說明書/, /善良管理人/, /不保證最低/, /過去(?:績效|配息)[^，。]{0,6}不代表/, /收益平準金/, /不負責本基金之盈虧/, /免責聲明|Disclaimer/i];
+  const specScore = (s) => SPEC_WORDS.reduce((n, [w, re]) => n + (re.test(s) ? w : 0), 0);
+  const specDense = (s) => (specScore(s) * 1000) / (s.length + 400);
+  const isLegal = (s) => s.length > 1200 && (BOILER.filter((re) => re.test(s)).length >= 2 || specDense(s) < 3);
+  const PAGE_CLIP = 3000; // 一頁最多放這麼多字
+  const LEGAL_CLIP = 2000;
+
+  // 每一頁的文字 → 要送給 AI 的那一段（最多 budget 個字）。
+  // 1. 每頁都有的頁首頁尾（例如「僅供內部使用」）和單獨一行的頁碼先拿掉；2. 放得下就整份都送；
+  // 3. 放不下就挑：第一頁一定放，再來是有規格字眼的頁、其他頁，法律聲明只放第一頁；送出去時照原本的頁次排，每頁前面標「【第 N 頁】」
+  function pickText(pages, budget) {
+    const list = (Array.isArray(pages) ? pages : [pages]).map((s) => String(s || '').replace(/\r\n?/g, '\n'));
+    if (list.length <= 1) return (list[0] || '').slice(0, budget); // 只有一頁（Word、txt）：照原樣，太長就截掉
+    const lines = list.map((s) => s.split('\n').map((x) => x.trim()).filter(Boolean));
+    const seen = new Map();
+    lines.forEach((ls) => new Set(ls).forEach((x) => seen.set(x, (seen.get(x) || 0) + 1)));
+    const often = Math.max(3, Math.ceil(list.length * 0.4));
+    const body = lines.map((ls) => ls.filter((x) => !(x.length >= 6 && seen.get(x) >= often) && !/^\d{1,3}$/.test(x)).join('\n'));
+    const mark = (i) => `【第 ${i + 1} 頁】\n`;
+    const cost = (i, n) => mark(i).length + n + 1;
+    let take = body;
+    if (body.reduce((n, s, i) => n + (s ? cost(i, s.length) : 0), 0) > budget) {
+      const info = body.map((s, i) => ({ i, s, legal: isLegal(s), score: specScore(s), dense: specDense(s) }));
+      const rest = info.slice(1);
+      const order = [info[0]]
+        .concat(rest.filter((p) => !p.legal && p.score > 0).sort((a, b) => b.dense - a.dense || a.i - b.i))
+        .concat(rest.filter((p) => !p.legal && p.score === 0))
+        .concat(rest.filter((p) => p.legal).slice(0, 1));
+      take = body.map(() => '');
+      let room = budget;
+      for (const p of order) {
+        const n = Math.min(p.s.length, p.legal ? LEGAL_CLIP : PAGE_CLIP, room - cost(p.i, 0));
+        if (n <= 0 || (n < 200 && n < p.s.length)) continue; // 剩的位置放不下有意義的一段：這頁不放
+        take[p.i] = p.s.slice(0, n);
+        room -= cost(p.i, n);
+      }
+    }
+    return take.map((s, i) => (s ? mark(i) + s : '')).filter(Boolean).join('\n');
+  }
+
+  // 規則要看哪些字：頁數多的文件（簡報）只看第一頁和規格最密的兩頁，不然整份掃下去會把圖表裡的字、別的表格當成欄位
+  function ruleText(pages) {
+    const list = (Array.isArray(pages) ? pages : [pages]).map((s) => String(s || ''));
+    if (list.length <= 3) return list.join('\n');
+    const best = list.map((s, i) => ({ i, s, d: i ? specDense(s) : 0 })).filter((x) => x.i && specScore(x.s) >= 8).sort((a, b) => b.d - a.d).slice(0, 2).sort((a, b) => a.i - b.i);
+    return [list[0]].concat(best.map((x) => x.s)).join('\n');
+  }
+
+  // AI 回的一檔商品 → 檢查過的 { type, 各欄位 }：只收字（物件、陣列不要），風險等級只認 RR1～RR5
+  function cleanAi(ai) {
+    const src = ai && typeof ai === 'object' ? ai : {};
+    const out = { type: TYPES[src.type] ? src.type : '' };
+    FK.forEach((k) => {
+      const got = typeof src[k] === 'string' || typeof src[k] === 'number' ? String(src[k]) : '';
+      out[k] = k === 'risks' ? many(got, 1200) : one(got, k === 'name' ? 60 : 200);
+    });
+    if (!/^RR[1-5]$/.test(out.risk)) out.risk = '';
+    return out;
+  }
+  // 伺服器回的結果 → 幾檔商品（什麼都沒讀到的不算；同名的只留第一個；最多 6 檔）
+  function aiProducts(d) {
+    const rows = Array.isArray(d?.products) ? d.products : d?.product ? [d.product] : [];
+    const out = [];
+    rows.map(cleanAi).forEach((c) => {
+      if (FK.some((k) => c[k]) && !out.some((x) => x.name && x.name === c.name)) out.push(c);
+    });
+    return out.slice(0, 6);
+  }
+
+  // AI 讀到的一檔商品，填進表單會是什麼樣子：AI 有讀完就以 AI 為準，AI 沒寫的欄位空著。
+  // 規則抓的（base）在簡報類文件上常常是雜句，只當等 AI 時的預覽和 AI 不能用時的備案；AI 連名稱都沒寫時才留原本的名稱（檔名）
+  function productTarget(base, ai) {
+    const c = cleanAi(ai);
+    const p = {};
+    FK.forEach((k) => { p[k] = c[k]; });
+    if (!p.name) p.name = base.p.name || '';
+    return { type: c.type || base.type, p };
+  }
+
+  // 把上面算出來的樣子併進表單：等 AI 的這段時間使用者自己改過的欄位和類型不動。
+  // raw 是表單現在的內容，snap 是送去給 AI 之前的樣子，ai 是伺服器回的一檔商品。回傳改了幾格。
   function mergeProduct(raw, snap, ai) {
     let n = 0;
     if (!ai || typeof ai !== 'object') return n;
-    if (TYPES[ai.type] && raw.type === snap.type && ai.type !== raw.type) applyType(raw, ai.type);
+    const c = cleanAi(ai);
+    if (!FK.some((k) => c[k])) return n; // AI 什麼都沒讀到：表單原樣，不要把規則抓的清光
+    const target = productTarget(snap, ai);
+    if (raw.type === snap.type && target.type !== raw.type) applyType(raw, target.type);
     FK.forEach((k) => {
-      const got = typeof ai[k] === 'string' || typeof ai[k] === 'number' ? String(ai[k]) : ''; // 只收字：物件、陣列不要
-      const val = k === 'risks' ? many(got, 1200) : one(got, k === 'name' ? 60 : 200);
-      if (!val || val === raw.p[k] || raw.p[k] !== snap.p[k]) return;
-      if (k === 'risk' && !/^RR[1-5]$/.test(val)) return;
-      raw.p[k] = val;
+      if (raw.p[k] !== snap.p[k] || target.p[k] === raw.p[k]) return;
+      raw.p[k] = target.p[k];
       n += 1;
     });
     return n;
@@ -488,31 +583,36 @@ const Arena = (() => {
     o.issuer = g(/(?:發行機構|發行人|發行商|發行銀行)[：:]\s*([^\n\r]+)/);
     const isin = t.match(/\b([A-Z]{2}[A-Z0-9]{9}[0-9])\b/);
     o.code = isin ? isin[1] : '';
-    o.ccy = g(/(?:計價幣別|幣別)[：:]\s*([^\n\r]+)/);
-    if (!o.ccy) { if (/美元|USD/.test(t)) o.ccy = '美元 USD'; else if (/歐元|EUR/.test(t)) o.ccy = '歐元 EUR'; else if (/澳幣|AUD/.test(t)) o.ccy = '澳幣 AUD'; }
+    // 幣別只認文件上明寫的。以前「內容出現美元就填美元」是用猜的：投資美元債的台幣計價基金會被填錯，填錯比空著更糟
+    o.ccy = g(/(?:計價幣別|計價貨幣|幣別)[：:]\s*([^\n\r]+)/);
     const rr = t.match(/RR\s*([1-5])/i);
     o.risk = rr ? `RR${rr[1]}` : '';
     o.coupon = g(/(?:票息|配息|息率|利率)[^：:\n]{0,8}[：:]\s*([^\n\r]+)/);
     o.tenor = g(/(?:到期日?|年期|期限|閉鎖期)[^：:\n]{0,6}[：:]\s*([^\n\r]+)/);
     o.rating = g(/(?:債券信用評等|信用評等|評等)[：:]\s*([^\n\r]+)/);
-    if (!o.rating) { const m = t.match(/(?:Fitch|Moody'?s|S&P)[^\n\r]{0,40}/i); o.rating = m ? m[0].trim() : ''; }
+    if (!o.rating) { const m = t.match(/(?:Fitch|Moody'?s|S&P)[^\n\r]{0,40}/i); if (m) { o.rating = m[0].trim(); } }
     o.call = g(/(?:提前贖回|贖回條款|可贖回|提前買回)[^：:\n]{0,6}[：:]\s*([^\n\r]+)/);
     o.extra = g(/(?:額外條件|其他條件|特殊條件)[：:]\s*([^\n\r]+)/);
     o.risks = g(/(?:必揭露風險|主要風險|風險提示)[：:]\s*([^\n\r]+)/);
-    if (!o.coupon) { const cm = t.match(/(?:票面利率|票息|年化)[^\n\r]{0,6}?(\d+(?:\.\d+)?\s*%)/); if (cm) o.coupon = cm[0].trim(); }
-    if (!o.tenor) { const dm = t.match(/(?:到期日?|Maturity)[^\n\r\d]{0,6}(20\d\d[/\-.年]\s?\d{1,2}[/\-.月]\s?\d{1,2}日?)/i); if (dm) o.tenor = dm[1]; }
-    if (!o.extra) { const lm = t.match(/閉鎖期[^\n\r]{0,24}/); if (lm) o.extra = lm[0].trim(); }
-    if (!o.call) { const km = t.match(/[^\n\r。]{0,20}(?:有權|得)[^\n\r。]{0,12}提前(?:贖回|買回)[^\n\r。]{0,30}/); if (km) o.call = km[0].trim(); }
+    if (!o.coupon) { const cm = t.match(/(?:票面利率|票息|年化)[^\n\r]{0,6}?(\d+(?:\.\d+)?\s*%)/); if (cm) { o.coupon = cm[0].trim(); } }
+    if (!o.tenor) { const dm = t.match(/(?:到期日?|Maturity)[^\n\r\d]{0,6}(20\d\d[/\-.年]\s?\d{1,2}[/\-.月]\s?\d{1,2}日?)/i); if (dm) { o.tenor = dm[1]; } }
+    if (!o.extra) { const lm = t.match(/閉鎖期[^\n\r]{0,24}/); if (lm) { o.extra = lm[0].trim(); } }
+    if (!o.call) { const km = t.match(/[^\n\r。]{0,20}(?:有權|得)[^\n\r。]{0,12}提前(?:贖回|買回)[^\n\r。]{0,30}/); if (km) { o.call = km[0].trim(); } }
     if (!o.risks) {
-      // 有「風險」兩個字的短句；「風險等級 RR4」和「主要風險」這種標題不算，前面的「一、」「1.」拿掉
+      // 像「信用風險」「匯率風險：……」「有本金損失風險。」這種一項一項的短句才算；句子中間剛好有「風險」兩個字的（「考量投資風險，本公司…」）、
+      // 「風險等級 RR4」和「主要風險」這種標題都不算。前面的「一、」「1.」拿掉
       const rl = t.split(/\n/).map((x) => x.trim().replace(/^(?:[一二三四五六七八九十]+|\d+)[、.．)）]\s*/, ''))
-        .filter((x) => /風險/.test(x) && x.length < 60 && !/等級|RR\s*[1-5]/i.test(x) && !/^(?:主要|相關|投資|商品)*風險(?:提示|揭露|說明|因素|預告書?)?[：:。]?$/.test(x)).slice(0, 6);
-      if (rl.length) o.risks = rl.join('\n');
+        .filter((x) => /[一-鿿]{2,}風險(?:[：:。]|$)/.test(x) && x.length < 60 && !/等級|RR\s*[1-5]/i.test(x) && !/^(?:主要|相關|投資|商品)*風險(?:提示|揭露|說明|因素|預告書?)?[：:。]?$/.test(x)).slice(0, 6);
+      if (rl.length) { o.risks = rl.join('\n'); }
     }
     // 表格式的文件沒有冒號（「發行機構　某某公司」）：上面沒抓到的，再用「一行開頭是欄位名稱、空白後面是內容」抓一次
-    const row = (labels) => { const m = t.match(new RegExp(`(?:^|\\n)[ \\t　]*(?:${labels})[ \\t　]+([^\\n\\r]+)`, 'i')); return m ? m[1].trim() : ''; };
-    const fuller = (k, labels) => { const x = row(labels); if (x && (!o[k] || x.includes(o[k]))) o[k] = x; }; // 整行比上面只抓到數字的那一小段完整
+    const NEXT = /[ \t　]+(?:證券簡稱|證券代[號碼]|基金類型|追蹤指[標數]|計價幣別|風險(?:收益|報酬)?等級|經理費|保管費|基金經理人|(?:基金)?保管銀行|收益分配|發行價格?|發行機構|連結標的|履約價|下限價|天期|到期日)(?=[ \t　*：:]|$)/;
+    const row = (labels) => { const m = t.match(new RegExp(`(?:^|\\n)[ \\t　]*(?:${labels})[*＊]?[ \\t　]+([^\\n\\r]+)`, 'i')); return m ? m[1].split(NEXT)[0].trim() : ''; };
+    const fuller = (k, labels) => { const x = row(labels); if (x && (!o[k] || x.includes(o[k]))) { o[k] = x; } }; // 整行比上面只抓到數字的那一小段完整
     if (!o.issuer) o.issuer = row('發行機構|發行人|發行銀行|基金公司|經理公司');
+    if (!o.ccy) o.ccy = row('計價幣別|計價貨幣|幣別');
+    const dist = row('收益分配|配息政策|配息方式|配息頻率|配息機制'); // 表格裡明寫的配息方式，比上面隨手抓到的「…配息:11月底」可靠
+    if (dist) o.coupon = dist;
     fuller('coupon', '配息率|配息政策|配息方式|配息頻率|配息|票面利率|票息');
     fuller('tenor', '天期|到期日|年期|基金類型|基金種類');
     if (!o.rating) o.rating = row('(?:發行機構|債券)?信用評等');
@@ -520,17 +620,17 @@ const Arena = (() => {
     o.strike = g(/(?:履約價|執行價|Strike)[^：:\n]{0,10}[：:]\s*([^\n\r]+)/i);
     o.ki = g(/(?:下限價|敲入|Knock[- ]?in|KI)[^：:\n]{0,10}[：:]\s*([^\n\r]+)/i);
     const ko = g(/(?:提前出場|自動提前|敲出|Knock[- ]?out|Autocall|KO)[^：:\n]{0,10}[：:]\s*([^\n\r]+)/i);
-    if (ko) o.call = ko;
+    if (ko) { o.call = ko; }
     if (!o.under) o.under = row('連結標的|標的資產|連結資產|連結股票');
     if (!o.strike) o.strike = row('履約價(?:格)?|執行價(?:格)?');
     if (!o.ki) o.ki = row('下限價(?:格)?|敲入價(?:格)?');
-    if (!ko) { const k2 = row('提前出場(?:條件)?|自動提前出場(?:條件)?'); if (k2) o.call = k2; }
+    if (!ko) { const k2 = row('提前出場(?:條件)?|自動提前出場(?:條件)?'); if (k2) { o.call = k2; } }
     if (!o.call) o.call = row('買回費用|贖回費用|提前贖回(?:條件)?');
     const stem = fname.replace(/\.[^.]+$/, '');
     if (!o.code) { const fi = stem.match(/[A-Z]{2}[A-Z0-9]{9}[0-9]/); if (fi) o.code = fi[0]; }
     if (!o.risk) { const fr = stem.match(/RR\s*([1-5])/i); if (fr) o.risk = `RR${fr[1]}`; }
     const head = stem + t.slice(0, 400);
-    o.type = /FCN|固定配息|Fixed Coupon|股權連結/i.test(head) ? 'fcn' : /債|bond/i.test(head) && !/基金/.test(stem) ? 'bond' : /基金|fund/i.test(head) ? 'fund' : '';
+    o.type = /FCN|固定配息|Fixed Coupon|股權連結/i.test(head) ? 'fcn' : /基金/.test(stem) || /ETF|投信/i.test(head) ? 'fund' : /債|bond/i.test(head) ? 'bond' : /基金|fund/i.test(head) ? 'fund' : '';
     if (!o.name) o.name = nameFromFile(fname); // 文件裡沒有寫「商品名稱：」：先用檔名，至少不用自己打
     return o;
   }
@@ -661,14 +761,14 @@ const Arena = (() => {
     return fromPlaybook(data.playbook);
   }
 
-  const logic = { TYPES, UNITS, FK, FIELDS, fieldsOf, fitsType, personaFor, PH, PHRASES, DIFF_OPTS, PERSONAS, SECTIONS, normalize, riskList, buildOutline, cleanOutline, buildChat, cleanRows, toScenario, fromPlaybook, recipeKey, parseProduct, fixCjk, nameFromFile, applyType, mergeProduct, sec1, sec2, sec3, sec4, selfScore, docHtml, plainDocHtml, exportData, readExport };
+  const logic = { TYPES, UNITS, FK, FIELDS, fieldsOf, fitsType, personaFor, PH, PHRASES, DIFF_OPTS, PERSONAS, SECTIONS, normalize, riskList, buildOutline, cleanOutline, buildChat, cleanRows, toScenario, fromPlaybook, recipeKey, parseProduct, fixCjk, nameFromFile, applyType, pickText, ruleText, cleanAi, aiProducts, productTarget, mergeProduct, sec1, sec2, sec3, sec4, selfScore, docHtml, plainDocHtml, exportData, readExport };
 
   // ------------------------------------------------------------------ 畫面（以下只在瀏覽器裡跑）
 
   let H = null; // app.js 給的工具：api、toast、go、show、setNav、reloadScenarios、startCall、avatarSVG、openEditor、scenario
   const WINDOW_KEY = 'aicoach.arenaWindow';
-  // up、ctrl、note 是上傳商品檔用的：第幾次上傳、還在等的 AI 請求、上傳框下面那行字
-  const W = { step: 1, raw: null, phrases: [], editId: '', saved: null, base: null, dirty: false, busy: false, gen: 0, up: 0, ctrl: null, note: null };
+  // up、ctrl、note、cands 是上傳商品檔用的：第幾次上傳、還在等的 AI 請求、上傳框下面那行字、文件裡有好幾檔商品時的清單
+  const W = { step: 1, raw: null, phrases: [], editId: '', saved: null, base: null, dirty: false, busy: false, gen: 0, up: 0, ctrl: null, note: null, cands: null };
   const $id = (id) => document.getElementById(id);
   const today = () => new Date().toLocaleDateString('zh-TW');
   const stamp = () => new Date().toISOString().slice(0, 10);
@@ -684,10 +784,10 @@ const Arena = (() => {
   // ---- 檔案解析：在瀏覽器裡把檔案變成文字（.txt 直接讀；.docx 解壓縮後拿文字；.pdf 用 pdf.js）。
   // 檔案本身不會上傳；抽出來的文字會送給伺服器上的 AI 判讀欄位（/api/editor/product）
   const FILE_MAX = 20 * 1024 * 1024;
-  const DOC_TEXT_MAX = 12000; // 送給 AI 的文字上限，和伺服器的 PRODUCT_TEXT_MAX 一樣
+  const DOC_TEXT_MAX = 20000; // 送給 AI 的文字上限，和伺服器的 PRODUCT_TEXT_MAX 一樣
   const AI_TEXT_MIN = 20; // 讀到的字比這還少：當作讀不到，不問 AI
   const AI_WAIT_MS = 90000;
-  const PDF_PAGES = 12; // 只讀前幾頁：商品的關鍵條件都在前面
+  const PDF_PAGES = 80; // 最多讀這麼多頁。整份都讀，再由 pickText 挑要送給 AI 的頁：規格常常在簡報的後半段（例如第 24 頁的基金小檔案）
   const NOTE0 = '還沒上傳；每個欄位都可以手動填、手動改。';
   // pdf.js（Mozilla 的 PDF 元件）：第一次上傳 PDF 才下載。固定版本加上完整性檢查，CDN 上的檔案被換掉就不會執行（跟 liveavatar.js 載 LiveKit 一樣）
   const PDFJS = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38';
@@ -740,7 +840,7 @@ const Arena = (() => {
     }
     return pdfjs;
   }
-  // 回傳 { text, why }：why 是讀不到字的原因（給畫面上那行字用）
+  // 回傳 { pages, why }：pages 是每一頁的文字；why 是讀不到字的原因（給畫面上那行字用）
   async function readPdf(file) {
     const data = new Uint8Array(await file.arrayBuffer());
     let lib;
@@ -749,22 +849,19 @@ const Arena = (() => {
       const rough = await readPdfRough(data).catch(() => '');
       const count = (re) => (rough.match(re) || []).length;
       const ok = count(/[一-鿿\w\s，。、：；（）%.,:;()/-]/g) >= rough.length * 0.85 && (count(/[一-鿿]/g) >= 20 || count(/[A-Za-z]{3,}/g) >= 15);
-      return { text: ok ? rough : '', why: '讀不到文字（讀 PDF 的元件下載不了，請檢查網路後再傳一次）' };
+      return { pages: [ok ? rough : ''], why: '讀不到文字（讀 PDF 的元件下載不了，請檢查網路後再傳一次）' };
     }
     const task = lib.getDocument({ data, cMapUrl: `${PDFJS}/cmaps/`, cMapPacked: true, standardFontDataUrl: `${PDFJS}/standard_fonts/`, isEvalSupported: false, disableFontFace: true, verbosity: 0 });
     try {
       const doc = await task.promise;
-      const parts = [];
-      let size = 0;
-      for (let i = 1; i <= Math.min(doc.numPages, PDF_PAGES) && size < DOC_TEXT_MAX * 2; i += 1) {
+      const pages = [];
+      for (let i = 1; i <= Math.min(doc.numPages, PDF_PAGES); i += 1) {
         const tc = await (await doc.getPage(i)).getTextContent();
-        const s = tc.items.map((it) => (it.str || '') + (it.hasEOL ? '\n' : '')).join('');
-        parts.push(s);
-        size += s.length;
+        pages.push(tc.items.map((it) => (it.str || '') + (it.hasEOL ? '\n' : '')).join(''));
       }
-      return { text: parts.join('\n'), why: '是掃描的圖片，裡面沒有可以讀的文字' };
+      return { pages, why: '是掃描的圖片，裡面沒有可以讀的文字' };
     } catch (e) {
-      return { text: '', why: e?.name === 'PasswordException' ? '有密碼保護，打不開' : '打不開（檔案可能壞了）' };
+      return { pages: [], why: e?.name === 'PasswordException' ? '有密碼保護，打不開' : '打不開（檔案可能壞了）' };
     } finally {
       Promise.resolve(task.destroy()).catch(() => {});
     }
@@ -809,7 +906,24 @@ const Arena = (() => {
     if (W.note?.busy) W.note = { text: W.note.idle || NOTE0, busy: false, idle: '' };
   }
 
-  // 上傳商品檔：1. 讀出文字 → 2. 檔名和規則先帶入（馬上看得到）→ 3. AI 讀內容，讀到的補上去
+  // 文件裡有好幾檔商品時，下拉選單換一檔：欄位整個換成那一檔的內容（選單出現之後自己改過的，先問一聲）
+  function pickCandidate(i) {
+    const c = W.cands;
+    const sel = $id('wzPick');
+    if (!c || !c.list[i] || i === c.pick) return;
+    readForm();
+    if (FK.some((k) => W.raw.p[k] !== c.shown[k]) && !window.confirm('換一檔會把下面改過的欄位換成那一檔的內容，要換嗎？')) { if (sel) sel.value = String(c.pick); return; }
+    const target = productTarget(c.base, c.list[i]);
+    applyType(W.raw, target.type);
+    W.raw.p = { ...target.p };
+    c.pick = i;
+    c.shown = { ...target.p };
+    W.dirty = true;
+    setNote(`這份文件有 ${c.list.length} 檔商品，現在填的是「${target.p.name}」，請核對後修改。`);
+    render();
+  }
+
+  // 上傳商品檔：1. 讀出文字 → 2. 檔名和規則先帶入（馬上看得到）→ 3. AI 讀內容，讀到的補上去（不只一檔就給下拉選單）
   async function takeFile(f) {
     if (!f || !$id('wzFileInfo')) return;
     const ext = f.name.split('.').pop().toLowerCase();
@@ -817,17 +931,20 @@ const Arena = (() => {
     if (f.size > FILE_MAX) { setNote(`「${f.name}」太大了（最多 20 MB）。`); return; }
     dropUpload();
     const my = W.up;
+    W.cands = null;
+    $id('wzPick')?.closest('label')?.remove(); // 上一份文件的下拉選單先收掉
     setNote(`正在讀「${f.name}」…`, true);
-    let text = '';
+    let pages = [];
     let why = '裡面讀得到的文字太少';
     try {
-      if (ext === 'txt') text = await f.text();
-      else if (ext === 'docx') text = await readDocx(f);
-      else ({ text, why } = await readPdf(f));
-    } catch { text = ''; }
+      if (ext === 'txt') pages = [await f.text()];
+      else if (ext === 'docx') pages = [await readDocx(f)];
+      else ({ pages, why } = await readPdf(f));
+    } catch { pages = []; }
     if (my !== W.up) return;
-    text = fixCjk(text);
-    const o = parseProduct(text, f.name);
+    pages = pages.map(fixCjk);
+    const text = pickText(pages, DOC_TEXT_MAX); // 送給 AI 的那一段
+    const o = parseProduct(ruleText(pages), f.name); // 規則：馬上有結果，AI 讀完之前先看到的
     readForm();
     FK.forEach((k) => { W.raw.p[k] = o[k] ? (k === 'risks' ? many(o[k], 1200) : one(o[k], k === 'name' ? 60 : 200)) : ''; });
     if (o.type) applyType(W.raw, o.type);
@@ -847,14 +964,21 @@ const Arena = (() => {
     const timer = setTimeout(() => ctrl.abort(), AI_WAIT_MS);
     let d = null;
     let err = '';
-    try { d = await H.api('/api/editor/product', { text: text.slice(0, DOC_TEXT_MAX), filename: f.name }, ctrl.signal); } catch (e) { err = e.name === 'AbortError' ? 'AI 讀太久' : (e.message || 'AI 沒有回應'); }
+    try { d = await H.api('/api/editor/product', { text, filename: f.name }, ctrl.signal); } catch (e) { err = e.name === 'AbortError' ? 'AI 讀太久' : (e.message || 'AI 沒有回應'); }
     clearTimeout(timer);
     if (my !== W.up) return; // 又傳了一個，或已經離開第一步：這份結果不用了
     W.ctrl = null;
     if (!d) { setNote(`已從「${f.name}」帶入 ${filled()} 個欄位（${err}，這次沒有用到 AI），請核對後手動補上。`); return; }
     readForm(); // 等的時候使用者可能改了幾格：先收回來，改過的不蓋
-    const changed = mergeProduct(W.raw, snap, d.product) || W.raw.type !== snap.type;
-    setNote(changed ? `AI 已讀完「${f.name}」，帶入 ${filled()} 個欄位，請核對後修改。` : `${done.slice(0, -1)}（AI 也讀過了，沒有要補的）。`);
+    const list = aiProducts(d);
+    if (!list.length) { setNote(`${done.slice(0, -1)}（AI 也讀過了，沒有讀到要補的）。`); return; }
+    const multi = list.length > 1;
+    const before = JSON.stringify([W.raw.type, W.raw.p]);
+    mergeProduct(W.raw, snap, list[0]);
+    if (multi) W.cands = { list, pick: 0, base: snap, shown: { ...W.raw.p } };
+    setNote(multi ? `AI 已讀完「${f.name}」：裡面有 ${list.length} 檔商品，先帶入第一檔，可以用下面的選單換。請核對後修改。`
+      : before !== JSON.stringify([W.raw.type, W.raw.p]) ? `AI 已讀完「${f.name}」，帶入 ${filled()} 個欄位，請核對後修改。`
+        : `${done.slice(0, -1)}（AI 也讀過了，沒有要補的）。`);
     render();
   }
 
@@ -887,6 +1011,8 @@ const Arena = (() => {
       `<button type="button" data-act="type" data-v="${k}" class="${r.type === k ? 'on' : ''}">${t}</button>`).join('')}</div></div>
       <label class="wz-upload" id="wzDrop"><b>把商品 DM 或規格檔拖到這裡，或點一下選檔</b><span>.docx、.txt、.pdf；檔名會帶入商品名稱，AI 會讀內容填好下面的欄位</span>
         <input type="file" id="wzFile" accept=".txt,.pdf,.docx" hidden><span class="muted${W.note?.busy ? ' busy' : ''}" id="wzFileInfo" aria-live="polite">${esc(W.note?.text || NOTE0)}</span></label>
+      ${W.cands ? `<label class="field wz-pick"><span>這份文件有 ${W.cands.list.length} 檔商品，要用哪一檔？</span><select id="wzPick">${W.cands.list.map((c, i) =>
+        `<option value="${i}"${i === W.cands.pick ? ' selected' : ''}>${esc(c.name || `第 ${i + 1} 檔`)}${TYPES[c.type] ? `（${TYPES[c.type]}）` : ''}</option>`).join('')}</select></label>` : ''}
       <div class="form-grid">${fieldsOf(r.type).map(([k, label]) => {
         if (k === 'risk') return `<label class="field"><span>${label}</span><select data-p="risk"><option value="">請選擇</option>${[1, 2, 3, 4, 5].map((n) => `<option${r.p.risk === `RR${n}` ? ' selected' : ''}>RR${n}</option>`).join('')}</select></label>`;
         if (k === 'risks') {
@@ -1098,7 +1224,10 @@ const Arena = (() => {
       W.dirty = true;
       msg('');
     });
-    box.addEventListener('change', (e) => { if (e.target.id === 'wzFile') { takeFile(e.target.files[0]); e.target.value = ''; } });
+    box.addEventListener('change', (e) => {
+      if (e.target.id === 'wzFile') { takeFile(e.target.files[0]); e.target.value = ''; }
+      if (e.target.id === 'wzPick') pickCandidate(Number(e.target.value));
+    });
     box.addEventListener('keydown', (e) => {
       if (e.target.id === 'wzNewPhrase' && e.key === 'Enter') {
         e.preventDefault();
@@ -1134,7 +1263,7 @@ const Arena = (() => {
   async function open(id = '') {
     const my = ++W.gen;
     dropUpload();
-    Object.assign(W, { step: 1, raw: blankRaw(), phrases: [...PHRASES], editId: '', saved: null, base: null, dirty: false, busy: false, ol: null, note: null });
+    Object.assign(W, { step: 1, raw: blankRaw(), phrases: [...PHRASES], editId: '', saved: null, base: null, dirty: false, busy: false, ol: null, note: null, cands: null });
     if (id) {
       let sc;
       try { sc = (await H.api('/api/editor/get', { id })).scenario; } catch (err) { H.toast(esc(err.message), 'error', 6000, '打不開這個情境'); return; }

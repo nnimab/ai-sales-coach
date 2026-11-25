@@ -181,6 +181,8 @@ class SaveTests(unittest.TestCase):
         self.assertEqual(p["risk"], "")
         self.assertTrue(all(isinstance(v, str) for v in p.values()))
         self.assertTrue(js["model"])
+        # 新格式：products 是清單（假 AI 回的四筆名稱都一樣，同名的只留第一筆）；product 是第一筆，給還開著舊版網頁的人用
+        self.assertEqual(js["products"], [p])
         # 文字太少、沒給文字：不問 AI
         for body in ({"text": "太短", "filename": "a.txt"}, {"filename": "a.txt"}, {"text": ["x"] * 50}, {"text": " \n " * 200}):
             st, js, data = self.post("/api/editor/product", body)
@@ -227,14 +229,32 @@ ai = {
 }
 out = {"keys": list(server.PRODUCT_KEYS) + ["risks"], "types": list(server.PRODUCT_TYPES)}
 out["ok"] = server.clean_product(ai, "FCN.pdf\n" + doc)
-out["bad"] = server.clean_product(dict(ai, type="stock", code="US0000000000", risk="RR2", coupon="年化 15%", ki="期初價格的 60%",
+out["made_up"] = server.clean_product(dict(ai, type="stock", code="US0000000000", risk="RR2", coupon="年化 15%", ki="期初價格的 60%",
                                        name={"x": 1}, risks="不是清單"), "FCN.pdf\n" + doc)
 try:
     server.clean_product(["x"], doc)
     out["not_dict"] = "accepted"
 except server.Invalid:
     out["not_dict"] = "rejected"
-out["schema"] = sorted(server.PRODUCT_SCHEMA["required"]) == sorted(server.PRODUCT_SCHEMA["properties"])
+item = server.PRODUCT_ITEM_SCHEMA
+out["schema"] = sorted(item["required"]) == sorted(item["properties"]) and server.PRODUCT_SCHEMA["properties"]["products"]["items"] is item
+many = {"products": [
+    dict(ai, name="主動測試動態入息"), dict(ai, name="主動測試複合收益", risk="RR2"), dict(ai, name="主動測試動態入息", issuer="重複的"),
+    {"type": "fund", "name": "", "risks": []}, "x", None,
+] + [dict(ai, name="第 %d 檔" % i) for i in range(9)]}
+got = server.clean_products(many, "FCN.pdf\n" + doc)
+out["many"] = [(p["name"], p["risk"]) for p in got]
+out["old_shape"] = [p["name"] for p in server.clean_products(ai, "FCN.pdf\n" + doc)]
+out["empty"] = server.clean_products({"products": []}, doc)
+bad = []
+for x in (["x"], {"products": "x"}, {"nothing": 1}):
+    try:
+        server.clean_products(x, doc)
+        bad.append("accepted")
+    except server.Invalid:
+        bad.append("rejected")
+out["bad"] = bad
+out["limits"] = [server.PRODUCT_TEXT_MAX, server.PRODUCT_MAX_ITEMS]
 out["in_prompt"] = [k for k in out["keys"] + ["type"] if ("- " + k + "：") not in server.PRODUCT_PROMPT]
 print(json.dumps(out, ensure_ascii=False))
 '''
@@ -274,8 +294,20 @@ class ProductCleanTests(unittest.TestCase):
         self.assertEqual(len(set(lines)), 8)
         self.assertTrue(all(len(x) <= 120 for x in lines))
 
+    def test_several_products(self):
+        """文件裡有好幾檔商品：每檔各一筆，同名的只留第一筆、空的不要、最多六筆；每一筆照樣檢查數字。"""
+        self.assertEqual(self.out["many"][:2], [["主動測試動態入息", "RR4"], ["主動測試複合收益", ""]])  # RR2 文件裡沒有：不收
+        self.assertEqual(len(self.out["many"]), 6)
+        self.assertEqual(len({n for n, _ in self.out["many"]}), 6)
+        self.assertEqual(self.out["old_shape"], ["美元計價 6 個月期 FCN"])  # AI 直接回一檔的欄位（舊格式）也收
+        self.assertEqual(self.out["empty"], [])
+        self.assertEqual(self.out["bad"], ["rejected", "rejected", "rejected"])
+        self.assertEqual(self.out["limits"], [20000, 6])
+        js = (_util.ROOT / "web" / "arena.js").read_text("utf-8")
+        self.assertIn("const DOC_TEXT_MAX = 20000;", js)  # 網頁送的字數上限要和伺服器一樣
+
     def test_made_up_values_are_dropped(self):
-        p = self.out["bad"]
+        p = self.out["made_up"]
         self.assertEqual(p["type"], "")
         self.assertEqual(p["code"], "")
         self.assertEqual(p["risk"], "")

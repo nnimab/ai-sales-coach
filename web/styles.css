@@ -414,6 +414,8 @@ a.pill { text-decoration: none; }
 .wz-upload { display: flex; flex-direction: column; align-items: center; gap: 4px; margin-top: 18px; padding: 18px; border: 1.5px dashed var(--line-2); border-radius: 18px; color: var(--text-2); font-size: 13px; text-align: center; cursor: pointer; }
 .wz-upload b { font-size: 14px; font-weight: 600; color: var(--text); }
 .wz-upload:hover, .wz-upload.drag { border-color: var(--text-3); background: var(--panel); }
+/* 文件裡有好幾檔商品時的下拉選單：緊跟在上傳框下面 */
+.wz-pick { margin-top: 12px; }
 /* 正在讀檔或等 AI 判讀：那行字前面有個小圈圈在轉 */
 .wz-upload .busy::before { content: ''; display: inline-block; width: 11px; height: 11px; margin-right: 6px; vertical-align: -1px; border: 2px solid var(--line-2); border-top-color: var(--text); border-radius: 50%; animation: spin 0.8s linear infinite; }
 .wz-msg { min-height: 20px; margin: 12px 0 0; font-size: 13.5px; color: var(--red); }

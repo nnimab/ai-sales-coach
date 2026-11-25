@@ -504,6 +504,27 @@ a.pill { text-decoration: none; }
 }
 .ai-box textarea:focus { border-color: var(--text-3); }
 .ai-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 10px; }
+.ai-row .muted { flex: 1; min-width: 0; }
+/* 情境最上面那一塊：要賣什麼（商品範本）、刁難度、描述客戶、AI 想的 3 位客戶 */
+.ai-top { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px 16px; }
+.ai-top .field:first-child { flex: 1; min-width: 220px; }
+.ai-top .seg { background: var(--bg); }
+.ai-top .seg button.on { background: var(--panel-2); }
+.ai-tplnote { min-height: 18px; margin: 8px 2px 10px; font-size: 12.5px; }
+.ai-tplnote:empty { min-height: 0; margin: 12px 0 0; }
+.ai-ideas { display: grid; gap: 8px; margin-top: 10px; }
+.ai-ideas .idea { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; padding: 12px 14px; border: 1px solid var(--line-2); border-radius: 14px; background: var(--bg); color: var(--text-2); font: inherit; font-size: 13px; line-height: 1.6; text-align: left; cursor: pointer; }
+.ai-ideas .idea:hover { border-color: var(--text-3); }
+.ai-ideas .idea b { font-size: 14px; font-weight: 600; color: var(--text); }
+.ai-ideas .idea > span:last-child { flex-basis: 100%; }
+/* 超業範本對話：一句一列（誰說的、階段、內容） */
+.script-ai { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 10px 0; padding: 12px 14px; border-radius: 14px; background: var(--panel); font-size: 13px; }
+.script-ai .pill { flex: none; }
+.edit-item.script-item { grid-template-columns: 84px 118px minmax(0, 1fr) auto; align-items: start; }
+.script-item select, .script-item textarea { width: 100%; min-width: 0; padding: 8px 12px; border: 1px solid var(--line-2); border-radius: 14px; outline: none; background: var(--bg); color: var(--text); font: inherit; font-size: 14px; line-height: 1.6; }
+.script-item select { height: 38px; padding: 0 10px; }
+.script-item textarea { resize: vertical; }
+.script-item select:focus, .script-item textarea:focus { border-color: var(--text-3); }
 .av-pick { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .av-pick button { width: 48px; height: 48px; flex: none; padding: 0; border: none; border-radius: 50%; overflow: hidden; background: none; cursor: pointer; opacity: 0.55; transition: opacity 0.15s, box-shadow 0.15s; }
 .av-pick button:hover { opacity: 0.85; }
@@ -1200,6 +1221,8 @@ mark.bad { padding: 0 2px; border-radius: 4px; background: var(--mark); color: i
   .vc-current { margin-left: 0; text-align: left; }
   .form-grid { grid-template-columns: 1fr; }
   .tpl-qa-row { grid-template-columns: 1fr; }
+  .edit-item.script-item { grid-template-columns: 84px minmax(0, 1fr) auto; }
+  .script-item .sc-text { grid-column: 1 / -1; grid-row: 2; }
   .tpl-qa-row .pill { justify-self: end; }
   .edit-item { grid-template-columns: minmax(0, 1fr) auto; }
   .edit-item .ed-hint { grid-column: 1; grid-row: 2; }

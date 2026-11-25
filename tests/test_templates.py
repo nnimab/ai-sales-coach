@@ -184,6 +184,100 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(self.post("/api/template/delete", {"id": self.extra})[0], 404)
         self.assertEqual([r["id"] for r in self.post("/api/template/list", {})[1]["templates"]], [self.tid])
 
+    # ---- 對練情境連到範本
+
+    def public(self, sid):
+        st, js, _, _ = self.req("GET", "/api/scenarios", None, self.cookie)
+        self.assertEqual(st, 200)
+        return next(s for s in js["scenarios"] if s["id"] == sid)
+
+    def test_6_ai_writes_scenario_for_a_template(self):
+        tid = self.tid
+        # 有選範本：描述可以不填；商品、評分標準、刁難度由範本和講師決定，不是 AI
+        st, js = self.post("/api/editor/draft", {"template_id": tid, "description": "", "difficulty_level": 3})
+        self.assertEqual(st, 200, js)
+        sc = js["scenario"]
+        self.assertEqual((sc["template_id"], sc["product"], sc["rubric_type"]), (tid, FUND["p"]["name"][:30], "fund"))
+        self.assertEqual((sc["difficulty_level"], sc["difficulty"]), (3, "困難"))
+        self.assertEqual(self.post("/api/editor/draft", {"template_id": "tpl-nothere", "description": ""})[0], 404)
+        self.assertEqual(self.post("/api/editor/draft", {"description": "太短"})[0], 400)  # 沒選範本：照舊要寫描述
+        self.assertEqual(self.post("/api/editor/draft", {"template_id": tid, "description": "太短"})[0], 400)  # 有寫就要寫夠
+        st, js = self.post("/api/editor/draft", {"description": "六十五歲退休老師，想把定存轉到每月配息的商品"})
+        self.assertEqual(st, 200)
+        self.assertNotIn("template_id", js["scenario"])
+
+    def test_7_scenario_follows_its_template(self):
+        tid = self.tid
+        sc = {
+            "title": "賠過本金的客戶開口要保本", "product": "隨便寫的商品", "template_id": tid, "rubric_type": "fund",
+            "difficulty_level": 3, "duration_min": 10, "call_direction": "outgoing", "initial_trust": 30,
+            "customer": {"name": "蘇小姐", "age": 45, "job": "外商財務經理", "avatar": "lin", "summary": "之前買的商品虧到本金，對新商品很防備。"},
+            "learner_task": "先處理客戶要保本的期待，再問清資金期限。", "opening_line": "喂，你們有保本的嗎？",
+            "checklist": [{"label": "同理虧損經驗", "hint": ""}, {"label": "完整揭露必揭露風險", "hint": ""}],
+            "server_only": {"persona": "你是蘇小姐，45 歲，外商公司財務經理，做事有條理，問題很尖銳。", "hidden_info": "有五百萬定存快到期。",
+                            "reveal_rules": "業務問資金來源 → 回答：定存快到期。", "behavior": "聽到很安全就冷掉。", "coach_notes": "先同理，再問虧損經過。"},
+            "script": [{"s": "同理破冰", "w": "A", "t": "蘇小姐您好，我是{業務稱呼}。"}, {"s": "亂寫的階段", "w": "X", "t": "你們有保本的嗎？"}, {"w": "A", "t": ""}, "x"],
+        }
+        st, js = self.post("/api/editor/save", {"scenario": sc})
+        self.assertEqual(st, 200, js)
+        sid = js["id"]
+        pub = self.public(sid)
+        self.assertEqual(pub["template"], {"id": tid, "name": FUND["p"]["name"], "status": "draft"})  # 範本還沒審核：首頁會標
+        self.assertEqual(pub["script"][1], {"s": "", "w": "C", "t": "你們有保本的嗎？"})  # 不認得的階段清掉、不是業務就是客戶、空的不要
+        self.assertEqual(len(pub["script"]), 2)
+        self.assertNotIn("{", pub["script"][0]["t"])  # 首頁拿到的已經換成實際的稱呼
+        self.assertNotIn("server_only", pub)
+        row = next(r for r in self.post("/api/editor/list", {})[1]["scenarios"] if r["id"] == sid)
+        self.assertEqual((row["template_id"], row["script"]), (tid, True))
+        self.assertEqual(self.post("/api/template/list", {})[1]["templates"][0]["scenarios"], 1)
+        # 範本審核通過：底下的情境馬上跟著變，不用重存
+        saved = self.post("/api/template/get", {"id": tid})[1]["template"]
+        body = {k: saved[k] for k in ("type", "p", "points", "qa", "donts")}
+        self.assertEqual(self.post("/api/template/save", {"id": tid, "template": body, "approve": True, "by": "王主管"})[0], 200)
+        self.assertEqual(self.public(sid)["template"]["status"], "approved")
+        # 用進階編輯改別的欄位（沒送 template_id 和 script）：兩樣都還在；送空的就是拿掉
+        st, js = self.post("/api/editor/save", {"id": sid, "scenario": {k: v for k, v in sc.items() if k not in ("template_id", "script")}})
+        self.assertEqual(st, 200, js)
+        self.assertEqual((self.public(sid)["template_id"], len(self.public(sid)["script"])), (tid, 2))
+        type(self).sid, type(self).sc = sid, sc
+
+    def test_8_ideas_and_script(self):
+        tid, sid, sc = self.tid, self.sid, self.sc
+        self.assertEqual(self.post("/api/editor/ideas", {"template_id": "tpl-nothere"})[0], 404)
+        self.assertEqual(self.post("/api/editor/ideas", {"template_id": tid})[0], 502)  # 假 AI 只會回「好」：描述太短，不算
+        self.gm_control({"json": {"ideas": [
+            {"label": "賠過本金、開口要保本", "desc": "蘇小姐，45 歲外商財務經理，定存五百萬快到期，之前虧過本金。", "difficulty": "困難"},
+            {"label": "賠過本金、開口要保本", "desc": "同一個類型再來一次，這一筆不要。", "difficulty": "困難"},
+            {"label": "剛退休想月月領息", "desc": "張老師，65 歲退休教師，想把退休金的一部分換成每月配息。", "difficulty": "亂寫"},
+            {"label": "", "desc": "沒有類型名稱的這一筆不要。", "difficulty": "簡單"}, "x",
+        ], "rows": [
+            {"stage": "同理破冰", "who": "A", "text": "蘇小姐您好，耽誤您三分鐘可以嗎？"}, {"stage": "同理破冰", "who": "C", "text": "你可以保證不會賠嗎？"},
+            {"stage": "白話說明", "who": "A", "text": "我不能保證。這檔每月配息，經理費 0.20%，配息來源可能是收益平準金。"},
+            {"stage": "痛點迎擊", "who": "C", "text": "那我再想想。"}, {"stage": "不存在的階段", "who": "A", "text": "好，資料我寄給您。"},
+        ]}})
+        try:
+            st, js = self.post("/api/editor/ideas", {"template_id": tid})
+            self.assertEqual(st, 200, js)
+            self.assertEqual([(x["label"], x["difficulty_level"]) for x in js["ideas"]], [("賠過本金、開口要保本", 3), ("剛退休想月月領息", 2)])
+            # 範本對話：客戶可以問「保證不會賠嗎」，業務說「我不能保證」也可以；經理費 0.20% 範本裡有
+            body = {"id": sid, "scenario": {k: v for k, v in sc.items() if k != "server_only"}}  # 隱藏設定沒送：用存好的補上
+            st, js = self.post("/api/editor/script", body)
+            self.assertEqual(st, 200, js)
+            self.assertEqual([(r["s"], r["w"]) for r in js["script"]], [("同理破冰", "A"), ("同理破冰", "C"), ("白話說明", "A"), ("痛點迎擊", "C"), ("", "A")])
+            for bad, word in (("這檔很穩，保證獲利。", "不能說的話"), ("年化配息率 7.5%，很不錯。", "數字")):
+                self.gm_control({"json": {"rows": [{"stage": "白話說明", "who": "A", "text": bad}] * 5}})
+                st, js = self.post("/api/editor/script", body)
+                self.assertEqual(st, 502, bad)
+                self.assertIn(word, js["error"])
+            self.assertEqual(self.post("/api/editor/script", {"scenario": dict(sc, template_id="")})[0], 400)  # 沒選範本
+            self.assertEqual(self.post("/api/editor/script", {"scenario": dict(sc, server_only={})})[0], 400)  # 客戶人設還沒寫
+        finally:
+            self.gm_control({"json": None})
+
+    def test_9_template_deleted_scenario_keeps_working(self):
+        self.assertEqual(self.post("/api/template/delete", {"id": self.tid})[0], 200)
+        self.assertEqual(self.public(self.sid)["template"], {"id": self.tid, "missing": True})  # 情境還在，只是標成範本不見了
+
 
 PROBE = r'''
 import json, sys
@@ -206,6 +300,10 @@ out["banned"] = [server.says_banned(s) for s in (
 loose = server.sanitize_template({"type": "nope", "p": {"name": "某某商品", "coupon": "長" * 300, "risk": "高"}, "points": ["短"] * 3 + ["長" * 200],
                                   "qa": [{"q": "只有問題"}, "x", {"q": "問", "a": "答"}], "donts": [str(i) + " 號" for i in range(20)]}, strict=False)
 out["loose"] = [loose["type"], len(loose["p"]["coupon"]), loose["p"]["risk"], [len(s) for s in loose["points"]], loose["qa"], len(loose["donts"])]
+sc = {"template_id": "tpl-abc123", "server_only": {"coach_notes": "先同理。", "product_facts": "情境自己存的舊資料"}}
+linked = server.with_template(sc, {"tpl-abc123": t})
+out["linked"] = [linked["server_only"]["product_facts"] == server.template_facts(t), linked["server_only"]["coach_notes"],
+                 sc["server_only"]["product_facts"], server.with_template(sc, {}) is sc]
 store = server.storage.FileStore(sys.argv[1])
 store.put_doc("templates", {"items": {"tpl-abc123": t}, "trash": {}})
 out["file"] = sorted(p.name for p in __import__("pathlib").Path(sys.argv[1]).iterdir())
@@ -245,6 +343,15 @@ class LogicTests(unittest.TestCase):
         self.assertEqual(self.out["risk"], "RR4")
         self.assertIn("- 客戶：跌破會怎樣？\n  建議回應：可能要用履約價承接股票。", self.out["coach"])
         self.assertIn("【這檔商品不能說的話】\n- 不能說保本", self.out["coach"])
+
+    def test_linked_scenario_uses_the_template(self):
+        """對練時：商品資料換成範本的，教練重點後面接上範本的建議回應和不能說的話；情境存的那一份不動。範本不在就用情境自己的。"""
+        same_facts, coach, kept, untouched = self.out["linked"]
+        self.assertTrue(same_facts)
+        self.assertTrue(coach.startswith("先同理。\n【客戶常見的質疑和建議回應】"), coach)
+        self.assertIn("【這檔商品不能說的話】", coach)
+        self.assertEqual(kept, "情境自己存的舊資料")
+        self.assertTrue(untouched)
 
     def test_banned_phrases(self):
         self.assertEqual(self.out["banned"], [True, False, True, True, False, True, False, False])

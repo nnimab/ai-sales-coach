@@ -361,6 +361,31 @@ test('下載的 Word 檔名：Role play腳本_[標的]_[客戶態樣]_[日期]',
   assert.match(Arena.wordName('A', 'B'), /^Role play腳本_A_B_\d{8}\.doc$/);
 });
 
+test('Word 文件：選了商品範本的情境，放進範本的商品資料、建議回應、不能說的話和範本對話', () => {
+  const sc = {
+    title: '賠過本金的客戶開口要保本', product: '某某基金', difficulty: '困難', duration_min: 10, call_direction: 'outgoing',
+    customer: { name: '蘇小姐', age: 45, job: '外商財務經理', summary: '之前虧過本金' }, opening_line: '你們有保本的嗎？', learner_task: '先處理保本的期待',
+    checklist: [{ label: '同理虧損經驗', hint: '' }],
+    script: [{ s: '同理破冰', w: 'A', t: '蘇小姐您好<b>' }, { s: '同理破冰', w: 'C', t: '你們有保本的嗎？' }, { s: '白話說明', w: 'A', t: '這檔每月配息。' }, { s: '', w: 'C', t: '我再想想。' }],
+  };
+  const tpl = {
+    type: 'fund', p: { name: '某某全球優選收益債券ETF基金', issuer: '某某投信', risk: 'RR2', coupon: '每月配息', strike: '不該出現', risks: '利率風險\n匯率風險' },
+    points: ['把錢交給投信買一籃子公司債'], qa: [{ q: '配息是不是賺來的？', a: '不一定，可能來自收益平準金。' }], donts: ['不能說保本'],
+    review: { status: 'approved', by: '王主管', at: '2026-11-25T05:00:00Z' },
+  };
+  const html = Arena.scenarioDocHtml(sc, tpl, '2026/11/25');
+  for (const t of ['基金公司／投信', '某某投信', '利率風險<br>匯率風險', '把錢交給投信買一籃子公司債', '【第 1 輪｜同理破冰】', '【第 2 輪｜白話說明】', '客戶（蘇小姐）',
+    '配息是不是賺來的？', '不能說保本', '已審核：王主管', '同理虧損經驗']) assert.ok(html.includes(t), t);
+  assert.ok(!html.includes('不該出現')); // 基金沒有履約價這一格
+  assert.ok(!html.includes('蘇小姐您好<b>') && html.includes('蘇小姐您好&lt;b&gt;'));
+  assert.ok(!html.includes('還沒有經過公司審核'));
+  assert.equal(html.split('【第 ').length - 1, 2); // 同一個階段連著講不重複標題，沒寫階段的那一句接在上一輪後面
+  // 範本未審核會註明；範本被刪掉（null）就只放情境的內容；還沒寫範本對話也不會壞
+  assert.ok(Arena.scenarioDocHtml(sc, { ...tpl, review: { status: 'draft' } }, '').includes('還沒有經過公司審核'));
+  const bare = Arena.scenarioDocHtml({ ...sc, script: [] }, null, '');
+  assert.ok(bare.includes('還沒有範本對話') && !bare.includes('必揭露風險') && bare.includes('蘇小姐'));
+});
+
 let failed = 0;
 for (const [name, fn] of tests) {
   try { fn(); console.log(`ok - ${name}`); } catch (e) { failed += 1; console.log(`not ok - ${name}\n${e.stack || e}`); }

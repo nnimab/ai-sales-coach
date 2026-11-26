@@ -382,6 +382,8 @@ a.pill { text-decoration: none; }
 .field textarea { height: auto; padding: 10px 16px; border-radius: 18px; line-height: 1.6; resize: vertical; }
 .field input:focus, .field select:focus, .field textarea:focus { border-color: var(--text-3); }
 .field input[readonly] { background: var(--panel); color: var(--text-2); cursor: default; } /* 跟著別的設定、這裡不能改的欄位 */
+.field > span .info-btn { width: 18px; height: 18px; margin: -3px 0 -3px 4px; vertical-align: -3px; } /* 欄位名稱旁的 ⓘ：不能把這一格撐得比隔壁高 */
+.field > .info-pop { margin: 2px 0 0; }
 .field.bad input, .field.bad textarea { border-color: var(--red); }
 .field .seg { align-self: flex-start; }
 .field .muted { margin: 0; }

@@ -1714,7 +1714,11 @@ const ScenarioAdmin = (() => {
   const AV_DESC = { chen: '戴眼鏡的中年男性', lin: '年長女性', wang: '年輕女性' };
   const DIFF = [[1, '簡單'], [2, '中等'], [3, '困難']];
   const DIRECTION = [['incoming', '客戶來電'], ['outgoing', '由你撥出']];
-  const RUBRIC_OPTS = [['general', '一般'], ['fund', '基金'], ['bond', '海外債']];
+  const RUBRIC_OPTS = [['general', '通用'], ['fund', '基金'], ['bond', '海外債']]; // 「通用」原本叫「一般」，和「一般模式」撞名
+  const RUBRIC_LOCK = '跟著商品範本的商品類型，這裡不用選';
+  const RUBRIC_INFO = '評分表的產品面有三個版本，差在 AI 看的重點：基金版看配息、費用和同類基金的比較；海外債版看票息、到期日、信用評等和贖回條款；通用版不預設商品類型，給其他商品用（FCN 也是）。'
+    + '有選商品範本時跟著範本的商品類型，這裡不能改。沒選範本時會照「商品」那一格的字自動選，用 AI 寫情境也會自動選；選得不對可以自己改。';
+  let rubricTouched = false; // 這次編輯有沒有人自己按過評分標準：按過就不再自動換
   const HIDDEN = [
     ['persona', '客戶人設', 1500, 5, '用「你是……」開頭：身分、家庭、投資經歷、個性和說話方式'],
     ['hidden_info', '隱藏資訊', 1000, 4, '沒被問到就不會說的關鍵事實，例如資金用途、投資期限、預備金'],
@@ -1920,6 +1924,7 @@ const ScenarioAdmin = (() => {
     editingId = id && !copy ? id : '';
     copyFrom = id && copy ? id : '';
     dirty = false;
+    rubricTouched = false;
     $('#aiDesc').value = '';
     fillTemplateSelect(sc.template_id || '');
     setLevel(sc.difficulty_level || 2);
@@ -1950,6 +1955,24 @@ const ScenarioAdmin = (() => {
   function seg(k, label, v, opts, isNum) {
     return `<div class="field"><span>${esc(label)}</span><div class="seg" role="group"${attrs({ 'aria-label': label, 'data-k': k, 'data-num': !!isNum })}>${opts.map(([val, name]) =>
       `<button type="button" data-v="${esc(val)}" class="${String(val) === String(v) ? 'on' : ''}">${esc(name)}</button>`).join('')}</div></div>`;
+  }
+
+  // 產品面用哪一版評分表：不用人選。有選商品範本就跟著範本（鎖住）；沒選就照「商品」那一格的字自動選，選得不對可以自己改
+  function rubricField(v, lock) {
+    return `<div class="field"><span>產品面評分標準<button class="info-btn" type="button" aria-expanded="false" aria-controls="rubricInfo" aria-label="說明：產品面評分標準">${icon('info')}</button></span>
+      <div class="seg" role="group" aria-label="產品面評分標準" data-k="rubric_type"${lock ? ` title="${esc(RUBRIC_LOCK)}"` : ''}>${RUBRIC_OPTS.map(([val, name]) =>
+    `<button type="button" data-v="${val}" class="${val === v ? 'on' : ''}"${lock ? ' disabled' : ''}>${name}</button>`).join('')}</div>
+      <p class="info-pop" id="rubricInfo" hidden>${esc(RUBRIC_INFO)}</p></div>`;
+  }
+
+  function setRubric(v, lock) {
+    const seg = form().querySelector('[data-k="rubric_type"]');
+    if (!seg) return;
+    seg.title = lock ? RUBRIC_LOCK : '';
+    $$('button', seg).forEach((x) => {
+      x.classList.toggle('on', x.dataset.v === v);
+      x.disabled = !!lock;
+    });
   }
 
   // 代稱小按鈕：插到游標位置，通話時伺服器會換成真的名字
@@ -2055,7 +2078,7 @@ const ScenarioAdmin = (() => {
       <div class="form-grid">
         ${text('title', '標題', sc.title, 30, { wide: true, ph: '例如：市場大跌，客戶想停扣贖回' })}
         ${text('product', '商品', linked ? linked.name : sc.product, 60, { wide: true, ph: '例如：股票型基金定期定額', lock: linked ? PRODUCT_LOCK : '' })}
-        ${seg('rubric_type', '產品面評分標準', sc.rubric_type || 'general', RUBRIC_OPTS, false)}
+        ${rubricField(linked ? RUBRIC_OF[linked.type] || 'general' : sc.rubric_type || 'general', !!linked)}
         ${num('duration_min', '建議時間（分鐘）', sc.duration_min, 3, 30)}
         ${seg('difficulty_level', '難度', sc.difficulty_level || 2, DIFF, true)}
         ${seg('call_direction', '通話方向', sc.call_direction || 'incoming', DIRECTION, false)}
@@ -2256,6 +2279,7 @@ const ScenarioAdmin = (() => {
       const d = await api('/api/editor/draft', tpl ? { description: desc, template_id: tpl.id, difficulty_level: pickedLevel() } : { description: desc });
       if (myGen !== gen || !$('#view-editor').classList.contains('active')) return; // 已經離開編輯器
       draft = d.scenario || blankScenario();
+      rubricTouched = false; // 評分標準 AI 已經選好了，之後改商品名稱還是會跟著換
       delete draft.hidden;
       delete draft.source;
       renderForm(draft, { openHidden: true });
@@ -2361,6 +2385,8 @@ const ScenarioAdmin = (() => {
     }
     el.classList.remove('bad');
     el.closest('.field')?.classList.remove('bad');
+    // 沒選範本：商品那一格打了什麼，評分標準就跟著選（自己按過就不動它）
+    if (el.dataset.k === 'product' && !pickedTemplate() && !rubricTouched) setRubric(Arena.guessRubric(el.value), false);
     checkTokens(el);
     if (el.closest('[data-list="demo_lines"]')) {
       el.closest('.edit-item').querySelector('.d').classList.toggle('bad', checkCompliance(el.value).length > 0);
@@ -2393,6 +2419,7 @@ const ScenarioAdmin = (() => {
       group.classList.remove('bad');
       group.closest('.field')?.classList.remove('bad');
       if (group.matches('.av-pick')) $('#avGender').textContent = genderOf(b.dataset.v) === 'female' ? '女' : '男';
+      if (group.dataset.k === 'rubric_type') rubricTouched = true;
       dirty = true;
     }
   });
@@ -2415,10 +2442,9 @@ const ScenarioAdmin = (() => {
       p.title = t ? PRODUCT_LOCK : '';
       if (t) p.value = t.name;
     }
-    if (t) { // 產品面的評分標準也跟著範本
-      const seg = form().querySelector('[data-k="rubric_type"]');
-      if (seg) $$('button', seg).forEach((x) => x.classList.toggle('on', x.dataset.v === (RUBRIC_OF[t.type] || 'general')));
-    }
+    // 產品面的評分標準：有選範本就跟著範本並鎖住；改成不選，就照商品那一格的字選，可以自己改
+    rubricTouched = false;
+    setRubric(t ? RUBRIC_OF[t.type] || 'general' : Arena.guessRubric(p?.value), !!t);
     const facts = form().querySelector('[data-k="server_only.product_facts"]');
     if (facts && t) facts.placeholder = '有選商品範本：對練時用範本的商品資料，這裡不用填。';
     dirty = true;

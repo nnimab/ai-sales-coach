@@ -11,6 +11,9 @@ const Arena = (() => {
   // 商品類型，照這個順序排（FCN 排第一個，新增情境時預設也選它）
   const TYPES = { fcn: 'FCN', bond: '海外債', fund: '共同基金', custom: '自訂其他商品' };
   const RUBRIC = { fcn: 'general', bond: 'bond', fund: 'fund', custom: 'general' }; // 對到 App 產品面的三種評分標準
+  // 沒選商品範本時，從「商品」那一行字判斷用哪一版評分表（和 server.py 的 guess_rubric 一樣，測試會比對）：
+  // 基金和 ETF（債券 ETF 也算）用基金版，債券用海外債版，其他用通用版
+  const guessRubric = (product) => (/基金|ETF|投信/i.test(String(product || '')) ? 'fund' : /債|票券|短票/.test(String(product || '')) ? 'bond' : 'general');
   const UNITS = ['財經部', '金商部', '業管部'];
   // 商品資料全部的欄位（存在劇本裡的名字）；每種類型只會用到其中幾個
   const FK = ['name', 'issuer', 'code', 'ccy', 'risk', 'under', 'coupon', 'tenor', 'strike', 'rating', 'call', 'ki', 'extra', 'risks'];
@@ -808,7 +811,7 @@ const Arena = (() => {
     return fromPlaybook(data.playbook);
   }
 
-  const logic = { TYPES, UNITS, FK, FIELDS, fieldsOf, fitsType, personaFor, PH, PHRASES, DIFF_OPTS, PERSONAS, SECTIONS, normalize, riskList, buildOutline, cleanOutline, buildChat, cleanRows, toScenario, fromPlaybook, recipeKey, parseProduct, fixCjk, nameFromFile, applyType, pickText, ruleText, cleanAi, aiProducts, productTarget, mergeProduct, sec1, sec2, sec3, sec4, selfScore, docHtml, plainDocHtml, scenarioDocHtml, wordName, exportData, readExport };
+  const logic = { TYPES, UNITS, FK, FIELDS, guessRubric, fieldsOf, fitsType, personaFor, PH, PHRASES, DIFF_OPTS, PERSONAS, SECTIONS, normalize, riskList, buildOutline, cleanOutline, buildChat, cleanRows, toScenario, fromPlaybook, recipeKey, parseProduct, fixCjk, nameFromFile, applyType, pickText, ruleText, cleanAi, aiProducts, productTarget, mergeProduct, sec1, sec2, sec3, sec4, selfScore, docHtml, plainDocHtml, scenarioDocHtml, wordName, exportData, readExport };
 
   // ------------------------------------------------------------------ 畫面（以下只在瀏覽器裡跑）
 

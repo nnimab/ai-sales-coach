@@ -1050,6 +1050,7 @@ PUBLIC_KEYS = (
     "playbook", "template_id", "script",
 )
 FACTS_MAX = 3000  # server_only.product_facts（商品資料）最多幾個字；可以不寫
+PRODUCT_NAME_MAX = 60  # 情境的「商品」和商品範本的名稱一樣長：選了範本，名稱要整個放得下（原本 30 個字，長的基金名稱會被切掉）
 
 
 def facts_text(facts, limit=FACTS_MAX):
@@ -1151,7 +1152,12 @@ def with_template(sc, templates):
     extra = template_coach(t)
     if extra:
         so["coach_notes"] = (so.get("coach_notes") or "") + "\n" + extra
-    return dict(sc, server_only=so)
+    return dict(sc, server_only=so, product=template_name(t) or sc.get("product", ""))
+
+
+def template_name(t):
+    """範本的商品名稱。有選範本的情境，畫面和提示詞上的「商品」一律用這個（範本改名會跟著變；舊版把名稱切成 30 個字的也會顯示完整的）。"""
+    return (t.get("p") or {}).get("name") or ""
 
 
 def _templates_for(raws):
@@ -1181,7 +1187,7 @@ def template_tag(tid, templates):
     t = templates.get(tid)
     if not t:
         return {"id": tid, "missing": True}
-    return {"id": tid, "name": (t.get("p") or {}).get("name") or "", "status": template_review(t)["status"]}
+    return {"id": tid, "name": template_name(t), "status": template_review(t)["status"]}
 
 
 def public_scenarios():
@@ -1193,6 +1199,7 @@ def public_scenarios():
         view = public_view(render_obj(d, values), src)
         if d.get("template_id"):
             view["template"] = template_tag(d["template_id"], templates)
+            view["product"] = view["template"].get("name") or view["product"]  # 商品名稱跟著範本
         out.append(view)
     return out
 
@@ -1379,7 +1386,7 @@ def sanitize_scenario(raw, strict=True, base=None):
         voice["rate"], voice["pitch"] = default_voice(gender, age)
 
     title = text(raw.get("title"), "title", "標題", 2, 30)
-    product = text(raw.get("product"), "product", "商品", 2, 30)
+    product = text(raw.get("product"), "product", "商品", 2, PRODUCT_NAME_MAX)
     # 評分標準（產品面用哪一版）：沒給就沿用原本的，都沒有就是 general
     kind = raw.get("rubric_type") if "rubric_type" in raw else base.get("rubric_type")
     if not isinstance(kind, str) or kind not in RUBRIC_TYPES:
@@ -2479,7 +2486,7 @@ def sanitize_template(raw, strict=True):
     shown = {k: label for k, label in PRODUCT_LABELS[ptype]}
     p = {}
     for k in PRODUCT_KEYS:  # 這個類型用不到的欄位（基金的履約價）不存
-        p[k] = one(src.get(k), 60 if k == "name" else 200, f"p.{k}", shown.get(k, k)) if k in shown else ""
+        p[k] = one(src.get(k), PRODUCT_NAME_MAX if k == "name" else 200, f"p.{k}", shown.get(k, k)) if k in shown else ""
     if len(p["name"]) < 2:
         raise Invalid("請填商品名稱（至少 2 個字）", "p.name")
     m = re.fullmatch(r"RR\s*([1-5])", p["risk"], re.I)
@@ -2579,17 +2586,49 @@ def template_coach(t):
 # 業務不能說的話（和 web/app.js 的 RULES 同一套意思；示範清單，待法遵確認）。AI 寫的建議回應如果出現這些說法，那一條不收
 _SALES_BAN = re.compile(
     r"保證(?:會)?(?:獲利|賺錢|賺|收益|報酬|回本|會漲|漲|配息|不虧|不會虧)|穩賺|包賺|必賺|只賺不賠|一定(?:會)?(?:賺|漲|回來|回本|獲利)"
-    r"|(?:不會|不可能)(?:虧|賠)|零風險|沒有風險|無風險|沒什麼風險|(?:跟|和|像|比)定存(?:一樣|還|更)?(?:安全|穩|保險)")
-_SALES_NEG = re.compile(r"[不沒無別勿免莫非]|禁止|避免")
+    r"|(?:不會|不可能)(?:虧(?![待欠])|賠(?![償付]))|零風險|沒有風險|無風險|沒什麼風險|(?:跟|和|像|比)定存(?:一樣|還|更)?(?:安全|穩|保險)")
+# 下面這幾組是在判斷「這句禁語是業務自己的主張，還是在否定它、在講客戶的想法」。只看同一小句（標點到標點之間）。
+_SALES_CLAUSE = re.compile(r"[,，。.!！?？;；：:\s]")  # 頓號和引號不算界線：「不等於保證保本、穩賺不賠」是同一句
+_SALES_TURN = re.compile(r"而且|並且|而是|所以|因此|同時|反而|但|可是|不過|只是")  # 講到這裡換了一件事，前面的否定管不到後面
+_SALES_SOFT = re.compile(  # 這些「不」「沒」是在安撫、催促、附和，不是在否定後面那句話：先拿掉再判斷
+    r"不(?:用|必|要|需要?)(?:太|再|這麼|那麼)?(?:擔心|煩惱|害怕|怕|緊張|操心|顧慮|猶豫)|別(?:再)?(?:擔心|怕|緊張|煩惱|猶豫|錯過)"
+    r"|不(?:能|容|要|可)錯過|不會(?:後悔|錯|吃虧|失望|讓[您你]失望|有問題|有事)|沒(?:有)?(?:問題|關係|錯)|不好意思|不瞞[您你]說?"
+    r"|不只|不但|不僅|不光|[您你]?(?:說|講|想)[得的](?:很)?(?:對|沒錯)")
+_SALES_NEG = re.compile(  # 真的在否定：「不能保證獲利」「沒有人可以…」「不等於…」；最後一項是否定字緊貼在禁語前面（「不」＋「保證獲利」）
+    r"不(?:能|會|可能|是|算|敢|該|應|可|得|宜|代表|等於|保證|表示|適合|見得|存在)|沒(?:有|辦法|人)|無法|並非|絕非|並無|未必"
+    r"|(?:不要|別|勿)(?:以為|認為|覺得|把|當|相信|聽信)|禁止|避免|難以|很難|[不沒無未非]$")
+_SALES_ECHO = re.compile(  # 在講客戶的想法或問題（「您希望這筆錢不會賠」），或別人的誤會、別人的話術，不是業務自己的主張
+    r"(?:(?<![跟向對和給幫替為讓請同])[您你][^，。]{0,8}?(?:說|講|提到|問|希望|想要|想找|想|要求|要的|期待|在意|擔心|怕|以為|認為|覺得|聽說|追求|需要)"
+    r"|(?:大家|很多人|不少人|有些人|有人|一般人|客戶)[^，。]{0,6}?(?:誤以為|以為|誤會|誤認)"
+    r"|有人(?:跟|向|對)[您你])[^，。]{0,12}$")
+_SALES_AFTER = re.compile(  # 否定放在後面：「穩賺不賠的商品是不存在的」「保證獲利我做不到」
+    r"不存在|做不到|辦不到|是不可能的|是沒有的|(?:不能|無法|沒辦法|不敢|不會)(?:跟[您你]|向[您你]|對[您你])?(?:保證|承諾|答應|打包票)"
+    r"|(?:不能|不敢|不會|不可以)(?:這樣|這麼|亂)?(?:說|講)(?:的)?$")
+_SALES_ASK = {"不會": "會", "不可": "可", "沒有": "有"}  # 「會不會賠」「可不可能虧」「有沒有風險」是在問，不是在保證
+
+
+def banned_claim(text):
+    """文字裡「業務自己主張」的禁語（保證獲利、不會賠、零風險這類）：回那一小句，沒有就回空字串。
+    不算的情況：前面有否定（我不能保證獲利、投資等級不等於穩賺不賠）、後面有否定（穩賺不賠的商品不存在）、
+    在講客戶的想法（您希望這筆錢不會賠）、在問問題（您是擔心會不會賠）。安撫的話（不用擔心）不算否定。"""
+    for m in _SALES_BAN.finditer(text):
+        cuts = [c.end() for c in _SALES_CLAUSE.finditer(text, 0, m.start())]
+        start = cuts[-1] if cuts else 0
+        stop = _SALES_CLAUSE.search(text, m.end())
+        end = stop.start() if stop else len(text)
+        before = _SALES_TURN.split(_SALES_SOFT.sub("", text[start:m.start()]))[-1]
+        after = _SALES_TURN.split(text[m.end():end])[0]
+        if _SALES_ASK.get(m.group()[:2]) and before.endswith(_SALES_ASK[m.group()[:2]]):
+            continue
+        if _SALES_NEG.search(before) or _SALES_ECHO.search(before) or _SALES_AFTER.search(after):
+            continue
+        return text[start:end]
+    return ""
 
 
 def says_banned(text):
     """文字裡有沒有「保證獲利」這類說法。前面是否定（「我不能保證獲利」）不算。"""
-    for m in _SALES_BAN.finditer(text):
-        before = re.split(r"[,，。.!！?？;；：:「」\s]", text[max(0, m.start() - 6):m.start()])[-1]
-        if not _SALES_NEG.search(before):
-            return True
-    return False
+    return bool(banned_claim(text))
 
 
 TEMPLATE_DRAFT_SCHEMA = {
@@ -2658,7 +2697,7 @@ def template_block(t):
 
 def draft_template_note(t, level):
     """AI 寫情境時，接在講師的描述後面：這個情境要賣哪一檔商品、怎麼用範本。"""
-    name = (t.get("p") or {}).get("name") or ""
+    name = template_name(t)
     rows = []
     if level in DIFFICULTY:
         rows.append(f"刁難度：{DIFFICULTY[level]}（difficulty 就填這個；客戶的戒心、initial_trust 和反應方式要配合）")
@@ -2668,7 +2707,7 @@ def draft_template_note(t, level):
         template_block(t),
         "",
         "針對這檔商品的要求：",
-        f"- product 填「{name[:30]}」。",
+        f"- product 填「{name}」。",
         "- 客戶的疑慮、persona 裡會問的問題、behavior 都要針對這檔商品的條件和風險（可以參考範本的常見質疑，但要換成這位客戶會講的話），不要寫每檔商品都通用的問題。",
         "- title 寫這位客戶的類型和狀況（例如「賠過本金的客戶開口要保本」），不用寫商品名稱。",
         "- coach_notes 寫應對這位客戶的重點：先做什麼、要問出什麼、哪裡容易講錯。商品的標準答案系統會另外附上範本，不用重抄。",
@@ -2777,10 +2816,12 @@ def clean_script(raw, source):
             continue
         who = "A" if row.get("who") == "A" else "C"
         if who == "A":
-            if says_banned(said):
-                raise Invalid("業務的話裡有不能說的說法", "banned")
-            if any(_number_key(n) not in known for n in _PCT_NUMBER.findall(_halfwidth(said))):
-                raise Invalid("業務講了範本裡沒有的數字", "number")
+            claim = banned_claim(said)
+            if claim:
+                raise Invalid(f"業務的話裡有不能說的說法：{claim}", "banned")
+            extra = [n for n in _PCT_NUMBER.findall(_halfwidth(said)) if _number_key(n) not in known]
+            if extra:
+                raise Invalid(f"業務講了範本裡沒有的數字：{'、'.join(extra[:3])}", "number")
         out.append({"s": row.get("stage") if row.get("stage") in SCRIPT_STAGES else "", "w": who, "t": said})
     if len(out) < SCRIPT_ROWS_MIN:
         raise Invalid("too short")
@@ -4730,8 +4771,7 @@ class Handler(BaseHTTPRequestHandler):
         except Invalid:
             return self._json(502, {"error": "AI 寫出來的內容不完整，請再試一次"})
         if tpl:  # 商品是範本決定的，不讓 AI 改
-            name = (tpl.get("p") or {}).get("name") or ""
-            sc.update(template_id=tid, product=name[:30] if len(name) >= 2 else sc["product"], rubric_type=TEMPLATE_RUBRIC.get(tpl.get("type"), "general"))
+            sc.update(template_id=tid, product=template_name(tpl) or sc["product"], rubric_type=TEMPLATE_RUBRIC.get(tpl.get("type"), "general"))
             if level:
                 sc.update(difficulty_level=level, difficulty=DIFFICULTY[level])
         self.log_message("AI 情境草稿 %.1f 秒（%s）", time.monotonic() - t0, used["label"])
@@ -4818,6 +4858,7 @@ class Handler(BaseHTTPRequestHandler):
             script = clean_script(raw, template_block(tpl) + "\n" + scenario_brief(sc))
         except Invalid as e:
             why = {"banned": "AI 寫的對話裡，業務講了不能說的話", "number": "AI 寫的對話裡，業務講了範本沒有的數字"}.get(e.field, "AI 寫出來的對話不完整")
+            self.log_message("AI 範本對話沒有採用：%s", str(e)[:120])  # 被擋的是哪一句記下來，之後才查得出是不是誤擋
             return self._json(502, {"error": why + "，這一份不採用，請再按一次"})
         used = labeled(provider)
         self.log_message("AI 範本對話 %.1f 秒（%s）", time.monotonic() - t0, used["label"])

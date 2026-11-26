@@ -1935,8 +1935,8 @@ const ScenarioAdmin = (() => {
   const attrs = (o) => Object.entries(o).filter(([, v]) => v !== undefined && v !== false)
     .map(([k, v]) => (v === true ? ` ${k}` : ` ${k}="${esc(v)}"`)).join('');
 
-  function text(k, label, v, max, { wide = false, ph = '' } = {}) {
-    return `<label class="field${wide ? ' wide' : ''}"><span>${esc(label)}</span><input${attrs({ type: 'text', 'data-k': k, maxlength: max, value: v ?? '', placeholder: ph, autocomplete: 'off' })}></label>`;
+  function text(k, label, v, max, { wide = false, ph = '', lock = '' } = {}) { // lock：這一格不能改的原因（滑鼠移上去會看到）
+    return `<label class="field${wide ? ' wide' : ''}"><span>${esc(label)}</span><input${attrs({ type: 'text', 'data-k': k, maxlength: max, value: v ?? '', placeholder: ph, autocomplete: 'off', readonly: !!lock, title: lock || undefined })}></label>`;
   }
 
   function area(k, label, v, max, rows, { ph = '', chips = false } = {}) {
@@ -1968,6 +1968,7 @@ const ScenarioAdmin = (() => {
 
   // ---- 要賣什麼：選一份商品範本。選了之後，對練時的商品資料和教練的標準都用範本的內容
   const RUBRIC_OF = { fcn: 'general', bond: 'bond', fund: 'fund', custom: 'general' };
+  const PRODUCT_LOCK = '商品名稱跟著商品範本，要改請到商品範本那一頁改';
   const pickedTemplate = () => templates.find((t) => t.id === $('#edTemplate').value) || null;
 
   function fillTemplateSelect(current) {
@@ -2039,6 +2040,7 @@ const ScenarioAdmin = (() => {
       return area(`server_only.${k}`, label, so[k] || '', max, rows, { ph, chips: k === 'persona' });
     }).join('');
     const trust = Number.isFinite(Number(sc.initial_trust)) ? Number(sc.initial_trust) : 45;
+    const linked = pickedTemplate(); // 有選商品範本：商品名稱用範本的，這裡不能改
     form().innerHTML = `
       <h2 class="sec-title">客戶資料</h2>
       <div class="form-grid">
@@ -2052,7 +2054,7 @@ const ScenarioAdmin = (() => {
       <h2 class="sec-title">情境</h2>
       <div class="form-grid">
         ${text('title', '標題', sc.title, 30, { wide: true, ph: '例如：市場大跌，客戶想停扣贖回' })}
-        ${text('product', '商品', sc.product, 30, { ph: '例如：股票型基金定期定額' })}
+        ${text('product', '商品', linked ? linked.name : sc.product, 60, { wide: true, ph: '例如：股票型基金定期定額', lock: linked ? PRODUCT_LOCK : '' })}
         ${seg('rubric_type', '產品面評分標準', sc.rubric_type || 'general', RUBRIC_OPTS, false)}
         ${num('duration_min', '建議時間（分鐘）', sc.duration_min, 3, 30)}
         ${seg('difficulty_level', '難度', sc.difficulty_level || 2, DIFF, true)}
@@ -2407,9 +2409,13 @@ const ScenarioAdmin = (() => {
     if (!draft) return;
     const t = pickedTemplate();
     draft.template_id = t ? t.id : '';
-    if (t) { // 商品名稱和產品面的評分標準跟著範本
-      const p = form().querySelector('[data-k="product"]');
-      if (p) p.value = t.name.slice(0, 30);
+    const p = form().querySelector('[data-k="product"]');
+    if (p) { // 有選範本：商品名稱就是範本的名稱，不能在這裡改；不選範本才自己打
+      p.readOnly = !!t;
+      p.title = t ? PRODUCT_LOCK : '';
+      if (t) p.value = t.name;
+    }
+    if (t) { // 產品面的評分標準也跟著範本
       const seg = form().querySelector('[data-k="rubric_type"]');
       if (seg) $$('button', seg).forEach((x) => x.classList.toggle('on', x.dataset.v === (RUBRIC_OF[t.type] || 'general')));
     }

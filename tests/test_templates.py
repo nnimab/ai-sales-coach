@@ -128,6 +128,20 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(js["template"]["review"], {"status": "draft", "by": "", "at": ""})
         self.assertEqual(self.post("/api/template/list", {})[1]["templates"][0]["review"]["status"], "draft")
         self.assertEqual(js["template"]["source"], "基金簡報.pdf")  # 沒再送來源檔名：沿用原本的
+        # 每組質疑可以多填背後心理、得分要點、地雷。沒填就不存：舊範本送來空的三欄，不算內容有改，審核狀態不會掉
+        self.assertEqual(self.post("/api/template/save", {"id": tid, "template": changed, "approve": True, "by": "王主管"})[0], 200)
+        blank = dict(changed, qa=[dict(x, why="", keys="  ", trap="") for x in changed["qa"]])
+        st, js = self.post("/api/template/save", {"id": tid, "template": blank})
+        self.assertEqual((js["template"]["review"]["status"], js["template"]["qa"]), ("approved", changed["qa"]))
+        more = {"why": "怕配息是拿本金發的", "keys": "配息來源、收益平準金、配息不代表報酬", "trap": "說配息都是賺來的"}
+        filled = dict(changed, qa=[dict(changed["qa"][0], **more)])
+        st, js = self.post("/api/template/save", {"id": tid, "template": filled})
+        self.assertEqual((js["template"]["review"]["status"], js["template"]["qa"]), ("draft", [dict(changed["qa"][0], **more)]))  # 有填就是內容有改
+        # 只填了三欄、沒寫質疑和回應：要補；太長會指出是哪一格
+        for bad, field in (({"keys": "只有得分要點"}, "qa.0.q"), (dict(changed["qa"][0], keys="長" * 151), "qa.0.keys"), (dict(changed["qa"][0], why="長" * 61), "qa.0.why")):
+            st, js = self.post("/api/template/save", {"id": tid, "template": dict(changed, qa=[bad])})
+            self.assertEqual((st, js.get("field")), (400, field), bad)
+        self.assertEqual(self.post("/api/template/save", {"id": tid, "template": changed})[0], 200)  # 還原，後面的測試照舊
 
     def test_3_bad_input(self):
         for patch, field in (({"type": "stock"}, "type"), ({"p": {"name": "A"}}, "p.name"), ({"p": dict(FUND["p"], risk="RR9")}, "p.risk"),
@@ -150,9 +164,10 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(st, 502, js)
         self.gm_control({"json": {
             "points": ["這是把錢交給投信買一籃子公司債，每月配息一次", "保證獲利，放著一定會賺", "年化配息率 7.5% 很穩"],
-            "qa": [{"q": "配息會不會配到本金？", "a": "有可能，配息來源可能是收益平準金，我不能保證配息金額。"},
-                   {"q": "會不會賠？", "a": "這檔很穩，不會賠啦。"},
-                   {"q": "費用多少？", "a": "經理費 0.20%，保管費 0.05%。"},
+            "qa": [{"q": "配息會不會配到本金？", "a": "有可能，配息來源可能是收益平準金，我不能保證配息金額。",
+                    "why": "怕配息是拿本金發的", "keys": "配息來源、收益平準金、不保證配息金額", "trap": "說配息都是賺來的、保證每月領得到"},
+                   {"q": "會不會賠？", "a": "這檔很穩，不會賠啦。", "keys": "不保證"},
+                   {"q": "費用多少？", "a": "經理費 0.20%，保管費 0.05%。", "why": "比價心態", "keys": "這檔保證獲利、費用透明", "trap": "說配息率有 9%"},
                    {"q": "費用多少？", "a": "經理費大概 1.5%。"},
                    {"q": "只有問題", "a": ""}],
             "donts": ["不能說保證獲利", "不能說配息率 8%", "不能把收益平準金的配息說成獲利"] + ["不能說的話" + c for c in "甲乙丙丁戊己庚辛壬癸子丑"],
@@ -166,6 +181,10 @@ class ApiTests(unittest.TestCase):
             self.assertEqual(d["points"], ["這是把錢交給投信買一籃子公司債，每月配息一次"])  # 保證獲利、資料裡沒有的 7.5% 都不收
             self.assertEqual([x["q"] for x in d["qa"]], ["配息會不會配到本金？", "費用多少？"])  # 「不會賠」「1.5%」不收；「不能保證」是否定，可以
             self.assertEqual(d["qa"][1]["a"], "經理費 0.20%，保管費 0.05%。")
+            # 背後心理、得分要點、地雷：地雷本來就會寫到禁語，照收；得分要點是業務要講的，有保證的說法就拿掉那一欄；資料裡沒有的 9% 也拿掉。整組還是留著
+            self.assertEqual({k: d["qa"][0].get(k) for k in ("why", "keys", "trap")},
+                             {"why": "怕配息是拿本金發的", "keys": "配息來源、收益平準金、不保證配息金額", "trap": "說配息都是賺來的、保證每月領得到"})
+            self.assertEqual(d["qa"][1], {"q": "費用多少？", "a": "經理費 0.20%，保管費 0.05%。", "why": "比價心態"})
             self.assertEqual(d["donts"][:2], ["不能說保證獲利", "不能把收益平準金的配息說成獲利"])  # 不能說的話本來就會提到禁語；8% 資料裡沒有
             self.assertEqual(len(d["donts"]), 9)  # 先留前 10 條，再拿掉講到 8% 的那一條
             self.assertTrue(js["model"])
@@ -360,6 +379,13 @@ t = server.sanitize_template({
 })
 out["facts"] = server.template_facts(t)
 out["coach"] = server.template_coach(t)
+# 質疑多填了背後心理、得分要點、地雷：教練看得到，評分時多一條規則（沒填的情境提示詞不變）
+t5 = dict(t, qa=[{"q": "發行機構倒了怎麼辦？", "why": "最怕血本無歸", "keys": "信用風險、分散配置", "a": "本金確實可能損失。", "trap": "保證不會倒"}])
+out["coach5"] = server.template_coach(t5)
+base = {"title": "情境", "product": "商品", "rubric_type": "general", "customer": {"name": "許董", "age": 48, "job": "企業主", "summary": "賠過錢"},
+        "server_only": {"hidden_info": "有閒錢", "coach_notes": "先同理。"}, "template_id": "tpl-abc123"}
+msgs = [{"role": "rep", "text": "您好"}]
+out["eval_rule"] = ["sales_objection 和相關項目" in server.evaluation_messages(server.with_template(base, {"tpl-abc123": x}), msgs)[0]["content"] for x in (t, t5)]
 out["risk"] = t["p"]["risk"]
 out["points"] = t["points"]
 out["banned"] = [server.says_banned(s) for s in (
@@ -433,6 +459,12 @@ class LogicTests(unittest.TestCase):
         self.assertEqual(self.out["risk"], "RR4")
         self.assertIn("- 客戶：跌破會怎樣？\n  建議回應：可能要用履約價承接股票。", self.out["coach"])
         self.assertIn("【這檔商品不能說的話】\n- 不能說保本", self.out["coach"])
+
+    def test_objection_columns_reach_the_coach(self):
+        """質疑的背後心理、得分要點、地雷：有填，教練就看得到，評分表多一條「有沒有講到得分要點、有沒有踩地雷」；沒填的範本照舊。"""
+        self.assertIn("- 客戶：發行機構倒了怎麼辦？\n  背後心理：最怕血本無歸\n  得分要點：信用風險、分散配置\n  建議回應：本金確實可能損失。\n  地雷：保證不會倒", self.out["coach5"])
+        self.assertNotIn("得分要點", self.out["coach"])
+        self.assertEqual(self.out["eval_rule"], [False, True])
 
     def test_linked_scenario_uses_the_template(self):
         """對練時：商品資料換成範本的，教練重點後面接上範本的建議回應和不能說的話；情境存的那一份不動。範本不在就用情境自己的。"""

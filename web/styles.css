@@ -412,7 +412,12 @@ a.pill { text-decoration: none; }
 .tpl-ai .busy::before { content: ''; display: inline-block; width: 11px; height: 11px; margin-right: 6px; vertical-align: -1px; border: 2px solid var(--line-2); border-top-color: var(--text); border-radius: 50%; animation: spin 0.8s linear infinite; }
 .tpl-ai .pill { flex: none; }
 .tpl-qa { display: flex; flex-direction: column; gap: 10px; }
-.tpl-qa-row { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 3fr) auto; align-items: start; gap: 8px; }
+/* 一組質疑五樣：第一列是質疑和背後心理，下面三列各佔整排（得分要點、建議回應、地雷） */
+.tpl-qa-row { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); align-items: start; gap: 10px 12px; padding: 14px; border: 1px solid var(--line-2); border-radius: 18px; }
+.tpl-qa-f { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.tpl-qa-f > span { font-size: 12px; color: var(--text-3); }
+.tpl-qa-f.wide, .tpl-qa-foot { grid-column: 1 / -1; }
+.tpl-qa-foot { display: flex; align-items: center; justify-content: space-between; font-size: 12px; }
 .tpl-qa + div { margin-top: 8px; }
 .tpl-review { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 12px; margin-top: 12px; }
 .tpl-review .field { flex: 0 0 100%; }
@@ -1227,7 +1232,6 @@ mark.bad { padding: 0 2px; border-radius: 4px; background: var(--mark); color: i
   .tpl-qa-row { grid-template-columns: 1fr; }
   .edit-item.script-item { grid-template-columns: 84px minmax(0, 1fr) auto; }
   .script-item .sc-text { grid-column: 1 / -1; grid-row: 2; }
-  .tpl-qa-row .pill { justify-self: end; }
   .edit-item { grid-template-columns: minmax(0, 1fr) auto; }
   .edit-item .ed-hint { grid-column: 1; grid-row: 2; }
   .list-row { flex-wrap: wrap; }

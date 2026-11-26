@@ -197,8 +197,18 @@ class ApiTests(unittest.TestCase):
         st, js = self.post("/api/editor/draft", {"template_id": tid, "description": "", "difficulty_level": 3})
         self.assertEqual(st, 200, js)
         sc = js["scenario"]
-        self.assertEqual((sc["template_id"], sc["product"], sc["rubric_type"]), (tid, FUND["p"]["name"][:30], "fund"))
+        self.assertEqual((sc["template_id"], sc["product"], sc["rubric_type"]), (tid, FUND["p"]["name"], "fund"))
         self.assertEqual((sc["difficulty_level"], sc["difficulty"]), (3, "困難"))
+        # 很長的商品名稱（以前情境的「商品」只有 30 個字，會被切在括號中間）：整個帶進情境
+        long_name = "某某0-5年期ESG投資等級公司債ETF證券投資信託基金（00999B）"
+        self.assertGreater(len(long_name), 30)
+        st, js = self.post("/api/template/save", {"template": dict(FUND, p=dict(FUND["p"], name=long_name))})
+        self.assertEqual(st, 200, js)
+        try:
+            st, got = self.post("/api/editor/draft", {"template_id": js["id"], "description": ""})
+            self.assertEqual((st, got["scenario"]["product"]), (200, long_name))
+        finally:
+            self.assertEqual(self.post("/api/template/delete", {"id": js["id"]})[0], 200)
         self.assertEqual(self.post("/api/editor/draft", {"template_id": "tpl-nothere", "description": ""})[0], 404)
         self.assertEqual(self.post("/api/editor/draft", {"description": "太短"})[0], 400)  # 沒選範本：照舊要寫描述
         self.assertEqual(self.post("/api/editor/draft", {"template_id": tid, "description": "太短"})[0], 400)  # 有寫就要寫夠
@@ -223,6 +233,14 @@ class ApiTests(unittest.TestCase):
         sid = js["id"]
         pub = self.public(sid)
         self.assertEqual(pub["template"], {"id": tid, "name": FUND["p"]["name"], "status": "draft"})  # 範本還沒審核：首頁會標
+        self.assertEqual(pub["product"], FUND["p"]["name"])  # 商品名稱跟著範本，不是情境自己存的「隨便寫的商品」
+        # 沒選範本的情境：商品自己打，最多 60 個字（和範本的名稱一樣長）
+        st, js2 = self.post("/api/editor/save", {"scenario": dict(sc, template_id="", product="長" * 60)})
+        self.assertEqual(st, 200, js2)
+        self.assertEqual(self.public(js2["id"])["product"], "長" * 60)
+        self.assertEqual(self.post("/api/editor/delete", {"id": js2["id"]})[0], 200)
+        st, js2 = self.post("/api/editor/save", {"scenario": dict(sc, template_id="", product="長" * 61)})
+        self.assertEqual((st, js2.get("field")), (400, "product"))
         self.assertEqual(pub["script"][1], {"s": "", "w": "C", "t": "你們有保本的嗎？"})  # 不認得的階段清掉、不是業務就是客戶、空的不要
         self.assertEqual(len(pub["script"]), 2)
         self.assertNotIn("{", pub["script"][0]["t"])  # 首頁拿到的已經換成實際的稱呼
@@ -346,13 +364,36 @@ out["risk"] = t["p"]["risk"]
 out["points"] = t["points"]
 out["banned"] = [server.says_banned(s) for s in (
     "這檔保證獲利", "我不能保證獲利", "放著一定會賺", "不會賠啦", "這不是零風險的商品", "跟定存一樣安全", "不能說跟定存一樣安全", "配息不代表報酬")]
+# 業務自己的主張：要擋。安撫、催促、附和的「不」「沒」不算否定；「而且」「但」之後換了一件事，前面的否定管不到
+BAD = ["您不用擔心，這檔穩賺", "您不用擔心這檔一定會賺", "這檔沒有風險，沒問題的", "別擔心這檔零風險", "不瞞您說這檔穩賺不賠", "這檔非常穩，保證配息",
+       "不過這檔保證獲利", "它不只安全還保證獲利", "這檔穩賺不賠", "這檔保證獲利不會讓您失望", "基本上沒什麼風險", "投資等級就是零風險", "這檔比定存還穩",
+       "我跟您說這檔穩賺", "我敢跟您保證獲利", "您說得對這檔穩賺", "這檔不會波動而且保證獲利", "這不是股票而是保證獲利的商品", "您千萬不能錯過這檔穩賺",
+       "很多客戶都說這檔穩賺", "這檔絕無風險", "您希望穩健，這檔保證獲利", "買了不會後悔一定會賺", "雖然有波動但一定會漲回來", "這檔和定存一樣保險"]
+# 否定、講客戶的想法、問問題：不擋（都是好業務會講的話）
+GOOD = ["投資等級並不等於保證保本、穩賺不賠", "投資等級不代表保證保本穩賺不賠", "我完全理解您希望這筆錢穩賺不賠的心情", "我了解您希望這筆退休金不會賠掉",
+        "您是擔心會不會賠對嗎", "沒有人可以跟您保證獲利", "我們不能說這個商品一定會賺錢", "我沒辦法跟您保證一定會賺", "世界上沒有穩賺不賠的投資",
+        "穩賺不賠的商品是不存在的", "您說的「穩賺不賠」，市場上沒有這種商品", "您剛才問有沒有風險", "任何投資都不可能零風險", "很多人以為投資等級債就是零風險",
+        "保證獲利這種話我不能說", "如果有人跟您保證獲利，那一定有問題", "價格不見得一定會回來", "它不像定存一樣安全", "絕對不能當成無風險的定存替代品",
+        "沒有保證收益也不保證保本", "我們不會虧待您", "您想找一個跟定存一樣安全的地方放這筆錢，我懂", "保證獲利我做不到", "不要以為投資等級就零風險",
+        "您要的是零風險，那我會建議這筆錢留在定存", "它不是不可能虧", "沒有不會賠的投資"]
+out["bad_missed"] = [s for s in BAD if not server.says_banned(s)]
+out["good_blocked"] = [s for s in GOOD if server.says_banned(s)]
+out["claim"] = server.banned_claim("我理解您的擔心，不過這檔保證獲利，放著就好。")
+ok_rows = [{"stage": "同理破冰", "who": "A", "text": "我完全理解您希望這筆錢穩賺不賠的心情。"}, {"stage": "同理破冰", "who": "C", "text": "所以保證獲利嗎？"},
+           {"stage": "白話說明", "who": "A", "text": "投資等級並不等於保證保本、穩賺不賠，這點我要先說清楚。"}, {"stage": "促成下一步", "who": "C", "text": "好，我想想。"}]
+out["script_ok"] = len(server.clean_script({"rows": ok_rows}, ""))
+try:
+    server.clean_script({"rows": ok_rows + [{"stage": "白話說明", "who": "A", "text": "您不用擔心，這檔穩賺。"}]}, "")
+except server.Invalid as e:
+    out["script_bad"] = [e.field, str(e)]
 loose = server.sanitize_template({"type": "nope", "p": {"name": "某某商品", "coupon": "長" * 300, "risk": "高"}, "points": ["短"] * 3 + ["長" * 200],
                                   "qa": [{"q": "只有問題"}, "x", {"q": "問", "a": "答"}], "donts": [str(i) + " 號" for i in range(20)]}, strict=False)
 out["loose"] = [loose["type"], len(loose["p"]["coupon"]), loose["p"]["risk"], [len(s) for s in loose["points"]], loose["qa"], len(loose["donts"])]
-sc = {"template_id": "tpl-abc123", "server_only": {"coach_notes": "先同理。", "product_facts": "情境自己存的舊資料"}}
+sc = {"template_id": "tpl-abc123", "product": "美元計價 6 個", "server_only": {"coach_notes": "先同理。", "product_facts": "情境自己存的舊資料"}}
 linked = server.with_template(sc, {"tpl-abc123": t})
 out["linked"] = [linked["server_only"]["product_facts"] == server.template_facts(t), linked["server_only"]["coach_notes"],
                  sc["server_only"]["product_facts"], server.with_template(sc, {}) is sc]
+out["linked_product"] = [linked["product"], sc["product"]]
 store = server.storage.FileStore(sys.argv[1])
 store.put_doc("templates", {"items": {"tpl-abc123": t}, "trash": {}})
 out["file"] = sorted(p.name for p in __import__("pathlib").Path(sys.argv[1]).iterdir())
@@ -402,8 +443,20 @@ class LogicTests(unittest.TestCase):
         self.assertEqual(kept, "情境自己存的舊資料")
         self.assertTrue(untouched)
 
+        self.assertEqual(self.out["linked_product"], ["美元計價 6 個月期 FCN", "美元計價 6 個"])  # 商品名稱跟著範本（存的那一份不動）
+
     def test_banned_phrases(self):
         self.assertEqual(self.out["banned"], [True, False, True, True, False, True, False, False])
+        self.assertEqual(self.out["bad_missed"], [])  # 業務自己保證的話，一句都不能漏
+        self.assertEqual(self.out["good_blocked"], [])  # 否定、講客戶的想法、問問題：不能誤擋
+        self.assertEqual(self.out["claim"], "不過這檔保證獲利")  # 回的是出問題的那一小句（記錄用）
+
+    def test_script_check_keeps_good_sales_talk(self):
+        """範本對話：業務同理客戶「希望穩賺不賠」、說明「不等於穩賺不賠」都要收；真的講了保證的話才整份退回，並指出是哪一句。"""
+        self.assertEqual(self.out["script_ok"], 4)
+        field, why = self.out["script_bad"]
+        self.assertEqual(field, "banned")
+        self.assertIn("這檔穩賺", why)
 
     def test_loose_mode_trims_instead_of_failing(self):
         self.assertEqual(self.out["loose"], ["custom", 200, "", [1, 120], [{"q": "問", "a": "答"}], 10])

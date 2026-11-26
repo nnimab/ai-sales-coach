@@ -64,7 +64,16 @@ RUBRIC_SECTIONS = (
     ("compliance", "合規面", "合規", 20),
 )
 # 產品面依情境的 rubric_type 換標準：fund 基金、bond 海外債；general 給沒指定商品的情境（從基金版改寫成通用的）
-RUBRIC_TYPES = {"general": "一般", "fund": "基金", "bond": "海外債"}
+RUBRIC_TYPES = {"general": "通用", "fund": "基金", "bond": "海外債"}  # general 原本叫「一般」，和「一般模式」撞名，使用者看不懂
+_RUBRIC_FUND = re.compile(r"基金|ETF|投信", re.I)
+_RUBRIC_BOND = re.compile(r"債|票券|短票")
+
+
+def guess_rubric(product):
+    """沒選商品範本時，從「商品」那一行字判斷產品面用哪一版評分表（和 web/arena.js 的 guessRubric 一樣，測試會比對）。
+    基金和 ETF（債券 ETF 也算）用基金版，債券用海外債版，其他（股票、FCN、保險、服務）用通用版。"""
+    s = str(product or "")
+    return "fund" if _RUBRIC_FUND.search(s) else "bond" if _RUBRIC_BOND.search(s) else "general"
 WORDING_CAP = 4  # 有違規用語時，「銷售用語合規性」最多幾分
 
 # guide 是給評分 AI 看的（指標說明, 加分, 扣分）；產品面依 rubric_type 各有一份
@@ -1152,7 +1161,12 @@ def with_template(sc, templates):
     extra = template_coach(t)
     if extra:
         so["coach_notes"] = (so.get("coach_notes") or "") + "\n" + extra
-    return dict(sc, server_only=so, product=template_name(t) or sc.get("product", ""))
+    return dict(sc, server_only=so, product=template_name(t) or sc.get("product", ""), rubric_type=template_rubric(t))
+
+
+def template_rubric(t):
+    """這份範本的商品，產品面用哪一版評分表。有選範本的情境一律用這個，不看情境自己存的（使用者：已經指定商品了，不該再讓人選一次）。"""
+    return TEMPLATE_RUBRIC.get(t.get("type"), "general")
 
 
 def template_name(t):
@@ -1200,6 +1214,8 @@ def public_scenarios():
         if d.get("template_id"):
             view["template"] = template_tag(d["template_id"], templates)
             view["product"] = view["template"].get("name") or view["product"]  # 商品名稱跟著範本
+            if d["template_id"] in templates:  # 評分標準也是
+                view["rubric_type"] = template_rubric(templates[d["template_id"]])
         out.append(view)
     return out
 
@@ -1391,7 +1407,7 @@ def sanitize_scenario(raw, strict=True, base=None):
     kind = raw.get("rubric_type") if "rubric_type" in raw else base.get("rubric_type")
     if not isinstance(kind, str) or kind not in RUBRIC_TYPES:
         if strict and kind not in (None, ""):
-            fail("評分標準只能選一般、基金或海外債", "rubric_type")
+            fail("評分標準只能選通用、基金或海外債", "rubric_type")
         kind = "general"
     level = raw.get("difficulty_level")
     try:
@@ -2124,6 +2140,7 @@ DRAFT_SCHEMA = {
     "properties": {
         "title": _S,
         "product": _S,
+        "rubric_type": {"type": "string", "enum": list(RUBRIC_TYPES)},
         "call_direction": {"type": "string", "enum": ["incoming", "outgoing"]},
         "customer": {
             "type": "object",
@@ -2152,7 +2169,7 @@ DRAFT_SCHEMA = {
         "initial_trust": _I,
     },
     "required": [
-        "title", "product", "call_direction", "customer", "server_only", "learner_task", "first_tip",
+        "title", "product", "rubric_type", "call_direction", "customer", "server_only", "learner_task", "first_tip",
         "opening_line", "checklist", "demo_lines", "difficulty", "duration_min", "initial_trust",
     ],
 }
@@ -2161,6 +2178,7 @@ DRAFT_SCHEMA = {
 DRAFT_EXAMPLE = {
     "title": "定存到期，想全部轉買高配息基金",
     "product": "高收益債券基金",
+    "rubric_type": "fund",
     "call_direction": "incoming",
     "customer": {
         "name": "張小姐",
@@ -2202,6 +2220,7 @@ DRAFT_PROMPT = """你是台灣證券公司的內訓教案設計師。講師會�
 請輸出一個 JSON 物件，欄位依序如下，全部用台灣繁體中文和台灣用語：
 - title：20 字內，點出客戶的狀況和難題，例如「市場大跌，客戶想停扣贖回」
 - product：這通電話談的商品或服務，20 字內
+- rubric_type：評分時產品面用哪一版標準。這通談的是基金或 ETF（債券 ETF 也算）填 fund；談的是債券填 bond；其他（股票、結構型商品、保險、帳戶或服務）填 general
 - call_direction：客戶打來是 incoming，業務打給客戶是 outgoing
 - customer.name 只寫稱呼（例如「陳先生」「林媽媽」）；customer.age；customer.job 20 字內
 - customer.avatar：從 chen（戴眼鏡的中年男性）、lin（年長女性）、wang（年輕女性）挑最接近的；頭像決定聲音的性別，男性客戶一律選 chen
@@ -4803,9 +4822,14 @@ class Handler(BaseHTTPRequestHandler):
         except Invalid:
             return self._json(502, {"error": "AI 寫出來的內容不完整，請再試一次"})
         if tpl:  # 商品是範本決定的，不讓 AI 改
-            sc.update(template_id=tid, product=template_name(tpl) or sc["product"], rubric_type=TEMPLATE_RUBRIC.get(tpl.get("type"), "general"))
+            sc.update(template_id=tid, product=template_name(tpl) or sc["product"], rubric_type=template_rubric(tpl))
             if level:
                 sc.update(difficulty_level=level, difficulty=DIFFICULTY[level])
+        else:  # 沒選範本：評分標準自動選。商品那行字看得出是基金或債券就照它；看不出來才用 AI 判斷的（AI 沒給就是通用）
+            kind = guess_rubric(sc["product"])
+            if kind == "general" and raw.get("rubric_type") in RUBRIC_TYPES:
+                kind = raw["rubric_type"]
+            sc["rubric_type"] = kind
         self.log_message("AI 情境草稿 %.1f 秒（%s）", time.monotonic() - t0, used["label"])
         # 草稿是剛產生的文字，還沒存；講師檢查後按儲存才會寫進自訂情境
         self._json(200, {"scenario": sc, "model": used["label"], "brain": provider["id"],

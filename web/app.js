@@ -947,6 +947,7 @@ function renderHome() {
         <div class="scn-who"><b>${esc(s.customer.name)}</b><span>${esc(s.customer.age)} 歲 · ${esc(s.customer.job)}</span></div>
       </div>
       <div class="scn-title">${esc(s.title)}</div>
+      <div class="scn-prod"><span>商品</span>${esc(s.product)}</div>
       <p class="scn-desc">${esc(s.customer.summary)}</p>
       <div class="scn-meta">
         <span>${icon(outgoing ? 'phoneOut' : 'phoneIn')}${outgoing ? '由你撥出' : '客戶來電'}</span>
@@ -4719,6 +4720,11 @@ function startCall(id) {
   ringPhoto(s);
   $('#phoneName').textContent = s.customer.name;
   $('#phoneScn').textContent = s.title;
+  // 接聽前就看得到這通要賣什麼、任務是什麼（原本要接通後到教練面板最下面點開才有）
+  [['#phoneProduct', s.product], ['#phoneTask', s.learner_task]].forEach(([sel, v]) => {
+    $(sel).textContent = v || '';
+    $(sel).parentElement.hidden = !v;
+  });
   $('#phoneMode').textContent = callPlan(s);
   $('#phoneStatus').textContent = outgoing ? `準備撥給${s.customer.name}` : '來電中…';
   $('#acceptLabel').textContent = outgoing ? '撥出' : '接聽';

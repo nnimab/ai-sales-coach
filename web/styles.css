@@ -202,6 +202,9 @@ button { font: inherit; color: inherit; }
 .scn-who b { display: block; font-size: 14.5px; font-weight: 600; line-height: 1.3; }
 .scn-who span { font-size: 12.5px; color: var(--text-3); }
 .scn-title { font-size: 15px; font-weight: 600; line-height: 1.45; }
+/* 這通要賣什麼：名稱長的最多兩行 */
+.scn-prod { font-size: 12.5px; line-height: 1.6; color: var(--text-2); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+.scn-prod span { margin-right: 6px; padding: 1px 7px; border: 1px solid var(--line-2); border-radius: 999px; color: var(--text-3); font-size: 11.5px; }
 .scn-desc { margin: 0; font-size: 13.5px; line-height: 1.6; color: var(--text-2); display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 .scn-meta { display: flex; align-items: center; gap: 12px; margin-top: auto; padding-top: 4px; font-size: 12.5px; color: var(--text-3); flex-wrap: wrap; }
 .scn-meta span { display: inline-flex; align-items: center; gap: 5px; }
@@ -934,7 +937,12 @@ mark.bad { padding: 0 2px; border-radius: 4px; background: var(--mark); color: i
 .modal h2 { margin: 0; font-size: 22px; font-weight: 600; letter-spacing: -0.01em; }
 .call-status { margin-top: 4px; font-size: 14px; color: var(--text-3); }
 .call-scn { margin-top: 12px; font-size: 13.5px; color: var(--text-2); }
-.call-plan { margin-top: 6px; font-size: 12.5px; color: var(--text-3); }
+/* 來電畫面的小抄：接聽前先知道這通要賣什麼、任務是什麼 */
+.call-brief { display: flex; flex-direction: column; gap: 8px; width: 100%; max-width: 420px; margin: 14px auto 0; padding: 12px 14px; border: 1px solid var(--line); border-radius: 14px; background: var(--panel-2); text-align: left; }
+.call-brief > div[hidden] { display: none; }
+.call-brief dt { font-size: 12px; color: var(--text-3); }
+.call-brief dd { margin: 2px 0 0; font-size: 13.5px; line-height: 1.55; color: var(--text); overflow-wrap: anywhere; }
+.call-plan { margin-top: 10px; font-size: 12.5px; color: var(--text-3); }
 .call-plan:empty { display: none; }
 .call-buttons { display: flex; justify-content: center; gap: 64px; margin-top: 30px; }
 .cb { display: flex; flex-direction: column; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text-3); }
@@ -962,6 +970,25 @@ mark.bad { padding: 0 2px; border-radius: 4px; background: var(--mark); color: i
   .ring-overlay .call-status { font-size: 15px; }
   .ring-overlay .call-buttons { margin-top: auto; padding-top: 40px; gap: 88px; }
   .ring-overlay .round { width: 68px; height: 68px; }
+}
+/* 加了商品和任務，來電畫面變高：矮的螢幕把頭像和間距縮小，還放不下就在視窗裡捲（接聽鍵不能被切掉） */
+.ring-overlay .call-modal { max-height: calc(100vh - 16px); max-height: calc(100dvh - 16px); overflow-y: auto; }
+@media (max-height: 760px) {
+  .ring-overlay .call-modal { padding-top: 22px; padding-bottom: 18px; }
+  .ring-overlay .call-avatar { width: 76px; height: 76px; margin-bottom: 12px; }
+  .ring-overlay .call-buttons { margin-top: 18px; }
+  .ring-overlay .modal-foot { margin-top: 14px; }
+}
+@media (max-width: 899px) {
+  .ring-overlay .call-modal { max-height: none; }
+}
+@media (max-width: 899px) and (max-height: 760px) {
+  .ring-overlay .call-modal { padding-top: max(28px, env(safe-area-inset-top)); padding-bottom: max(20px, env(safe-area-inset-bottom)); }
+  .ring-overlay .call-avatar { width: 88px; height: 88px; margin-top: auto; margin-bottom: 14px; }
+  .ring-overlay h2 { font-size: 24px; }
+  .ring-overlay .call-buttons { margin-top: auto; padding-top: 18px; gap: 72px; }
+  .ring-overlay .round { width: 60px; height: 60px; }
+  .ring-overlay .modal-foot { margin-top: 12px; }
 }
 .modal-foot { display: flex; align-items: center; justify-content: center; gap: 6px; margin-top: 24px; font-size: 12.5px; color: var(--text-3); }
 .modal-foot .ic { width: 14px; height: 14px; }

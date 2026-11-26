@@ -384,6 +384,15 @@ test('Word 文件：選了商品範本的情境，放進範本的商品資料、
   assert.ok(Arena.scenarioDocHtml(sc, { ...tpl, review: { status: 'draft' } }, '').includes('還沒有經過公司審核'));
   const bare = Arena.scenarioDocHtml({ ...sc, script: [] }, null, '');
   assert.ok(bare.includes('還沒有範本對話') && !bare.includes('必揭露風險') && bare.includes('蘇小姐'));
+  // 常見質疑：舊範本只有質疑和建議回應，表格就兩欄；有填背後心理、得分要點或地雷，就是五欄（得分要點和地雷用頓號拆成一點一點）
+  assert.ok(!html.includes('<th') || !html.includes('得分要點'));
+  const five = Arena.scenarioDocHtml(sc, { ...tpl, qa: [
+    { q: '發行機構倒了怎麼辦？', why: '最怕血本無歸', keys: '信用風險、評等不等於不違約、分散配置', a: '本金確實可能損失。', trap: '保證不會倒、說大公司<不可能>出問題' },
+    { q: '只有兩欄的那一組', a: '照樣列出來。' },
+  ] }, '');
+  for (const t of ['背後心理', '得分要點', '地雷', '最怕血本無歸', '<li>信用風險</li>', '<li>評等不等於不違約</li>', '<li>分散配置</li>', '本金確實可能損失。',
+    '保證不會倒', '說大公司&lt;不可能&gt;出問題', '只有兩欄的那一組']) assert.ok(five.includes(t), t);
+  assert.ok(!five.includes('<不可能>'));
 });
 
 let failed = 0;

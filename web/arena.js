@@ -763,7 +763,14 @@ const Arena = (() => {
     });
     const script = rows.length ? tbl(['發話角色', '對話內容'], rows, { word: true, widths: [20, 80] }) : '<p>（這個情境還沒有範本對話，可以到情境設定按「AI 寫範本對話」。）</p>';
     const checks = tbl(['檢核項目', '提示'], (sc.checklist || []).map((c) => [esc(c.label), L(c.hint)]), { word: true, widths: [34, 66] });
-    const qa = tpl?.qa?.length ? `<p><b>客戶常見的質疑和建議回應</b></p>${tbl(['客戶的質疑', '建議回應'], tpl.qa.map((x) => [esc(x.q), esc(x.a)]), { word: true, widths: [34, 66] })}` : '';
+    // 常見質疑：有填背後心理、得分要點或地雷，就用五欄的表（原本腳本生成器「核心異議攻防」的四欄，多一欄建議回應）；舊範本只有兩欄
+    const parts = (s) => String(s || '').split(/[、\n]/).map((x) => x.trim()).filter(Boolean);
+    const bullets = (s, warn) => (parts(s).length ? ul(parts(s).map((x) => (warn ? red(esc(x), true) : esc(x)))) : '—');
+    const full = (tpl?.qa || []).some((x) => x.why || x.keys || x.trap);
+    const qaTable = !tpl?.qa?.length ? '' : full
+      ? tbl(['客戶的質疑', '背後心理', '得分要點', '建議回應', '地雷'], tpl.qa.map((x) => [esc(x.q), L(x.why), bullets(x.keys), esc(x.a), bullets(x.trap, true)]), { word: true, widths: [17, 12, 20, 33, 18] })
+      : tbl(['客戶的質疑', '建議回應'], tpl.qa.map((x) => [esc(x.q), esc(x.a)]), { word: true, widths: [34, 66] });
+    const qa = qaTable ? `<p><b>客戶常見的質疑和建議回應</b></p>${qaTable}` : '';
     const donts = tpl?.donts?.length ? `<p><b>這檔商品不能說的話</b></p>${ul(tpl.donts.map((x) => red(esc(x), true)))}` : '';
     const points = tpl?.points?.length ? `<p><b>白話重點</b></p>${ul(tpl.points.map(esc))}` : '';
     const rubric = tbl(['面向', '評分項目', '滿分'], ITEMS.map((it) => [it[0] ? `<b>${it[0]}</b>` : '', it[1], String(it[2])]), { word: true, widths: [24, 56, 20] });
@@ -1055,7 +1062,7 @@ const Arena = (() => {
     box.querySelectorAll('[data-w]').forEach((e) => { W.raw.w[e.dataset.w] = e.value; });
     if (!W.tpl) return;
     box.querySelectorAll('[data-t]').forEach((e) => { W.tpl[e.dataset.t] = e.value; });
-    const rows = [...box.querySelectorAll('.tpl-qa-row')].map((r) => ({ q: r.querySelector('[data-qa="q"]').value, a: r.querySelector('[data-qa="a"]').value }));
+    const rows = [...box.querySelectorAll('.tpl-qa-row')].map((r) => Object.fromEntries(QA_KEYS.map((k) => [k, r.querySelector(`[data-qa="${k}"]`)?.value || ''])));
     if (rows.length) W.tpl.qa = rows; // 空的那幾組先留著（存的時候才拿掉），畫面上第幾組才對得上
   }
   const readOutline = () => {
@@ -1104,7 +1111,17 @@ const Arena = (() => {
   const TPL_QA_MAX = 10;
   const TPL_NOTE0 = '上傳商品檔之後 AI 會接著寫這三欄；也可以自己填，或按右邊的按鈕。';
   const tplLines = (s) => String(s || '').split('\n').map((x) => one(x, 200)).filter(Boolean);
-  const tplHasStd = () => !!W.tpl && !!(W.tpl.points.trim() || W.tpl.donts.trim() || W.tpl.qa.some((x) => x.q.trim() || x.a.trim()));
+  // 一組質疑的五樣：[欄位, 畫面上的名稱, 最多幾個字, 提示]。背後心理、得分要點、地雷是原本腳本生成器「核心異議攻防」表的欄位，可以不填
+  const QA_FIELDS = [
+    ['q', '客戶的質疑', 80, '客戶會怎麼問'],
+    ['why', '背後心理', 60, '客戶為什麼這樣問。例：最怕血本無歸'],
+    ['keys', '得分要點', 150, '一定要講到的關鍵字，用頓號分開。例：信用風險、評等不等於不違約、分散配置'],
+    ['a', '建議回應', 300, '建議業務怎麼回'],
+    ['trap', '地雷', 120, '最容易講錯的說法，用頓號分開。例：保證不會倒、說大公司不可能出問題'],
+  ];
+  const QA_KEYS = QA_FIELDS.map((f) => f[0]);
+  const qaRow = (x) => Object.fromEntries(QA_FIELDS.map(([k]) => [k, String(x?.[k] || '')]));
+  const tplHasStd = () => !!W.tpl && !!(W.tpl.points.trim() || W.tpl.donts.trim() || W.tpl.qa.some((x) => QA_KEYS.some((k) => (x[k] || '').trim())));
   const tplDay = (iso) => { const d = new Date(iso); return Number.isNaN(d.getTime()) ? '' : d.toLocaleDateString('zh-TW'); };
   const infoTip = (id, label, text) => `<button class="info-btn" type="button" aria-expanded="false" aria-controls="${id}" aria-label="說明：${esc(label)}">${H.icon('info')}</button>`
     + `<p class="info-pop" id="${id}" hidden>${text}</p>`;
@@ -1118,26 +1135,30 @@ const Arena = (() => {
     if (!p.risks.trim()) p.risks = RISK_DEF[r.type].join('\n');
     return {
       type: r.type, p, points: tplLines(t.points), donts: tplLines(t.donts), source: t.source || '',
-      qa: t.qa.map((x) => ({ q: one(x.q, 80), a: one(x.a, 300) })).filter((x) => x.q || x.a),
+      qa: t.qa.map((x) => Object.fromEntries(QA_FIELDS.map(([k, , max]) => [k, one(x[k], max)]))).filter((x) => QA_KEYS.some((k) => x[k])),
     };
   }
 
   function tplPage() {
     const t = W.tpl;
     const ok = t.review?.status === 'approved';
-    const qa = t.qa.length ? t.qa : [{ q: '', a: '' }];
+    const qa = t.qa.length ? t.qa : [qaRow()];
+    const qaField = ([k, label, max, ph], x, i) => {
+      const at = `data-qa="${k}" maxlength="${max}" placeholder="${esc(ph)}" aria-label="第 ${i + 1} 組：${label}"`;
+      const input = k === 'a' ? `<textarea ${at} rows="2">${esc(x[k] || '')}</textarea>` : `<input type="text" ${at} value="${esc(x[k] || '')}" autocomplete="off">`;
+      return `<label class="tpl-qa-f${k === 'q' || k === 'why' ? '' : ' wide'}"><span>${label}</span>${input}</label>`;
+    };
     return `${productForm()}
       <h2 class="tpl-h2">給教練當標準的內容${infoTip('tplStdInfo', '給教練當標準的內容',
-    '對練時，AI 教練會拿這三欄當標準，判斷業務講得對不對；AI 寫情境時也會參考。AI 先寫草稿，公司審核的人再修改。')}</h2>
+    '對練時，AI 教練會拿這三欄當標準，判斷業務講得對不對；AI 寫情境時也會參考。AI 先寫草稿，公司審核的人再修改。每組質疑的「得分要點」是教練會逐項核對的關鍵字，「地雷」是回這個質疑時不能講的話；背後心理、得分要點、地雷可以不填。')}</h2>
       <div class="tpl-ai"><span class="muted${t.busy ? ' busy' : ''}" id="tplAiNote" aria-live="polite">${esc(t.note || TPL_NOTE0)}</span>
         <button class="pill sm" type="button" data-act="tpl-ai"${t.busy ? ' disabled' : ''}>${tplHasStd() ? '請 AI 重寫' : 'AI 幫我寫'}</button></div>
       <label class="field wide"><span>白話重點</span>
         <textarea data-t="points" rows="4" maxlength="800" placeholder="一行一句，業務可以直接對客戶說的話。例：這是把錢交給投信買一籃子公司債，每個月配息一次。">${esc(t.points)}</textarea></label>
       <div class="field wide"><span>客戶常見的質疑和建議回應</span>
         <div class="tpl-qa">${qa.map((x, i) => `<div class="tpl-qa-row" data-i="${i}">
-          <input type="text" data-qa="q" maxlength="80" value="${esc(x.q)}" placeholder="客戶會怎麼問" aria-label="第 ${i + 1} 組：客戶的質疑" autocomplete="off">
-          <textarea data-qa="a" rows="2" maxlength="300" placeholder="建議業務怎麼回" aria-label="第 ${i + 1} 組：建議回應">${esc(x.a)}</textarea>
-          <button class="pill sm ghost" type="button" data-act="tpl-qa-del">刪除</button></div>`).join('')}</div>
+          ${QA_FIELDS.map((f) => qaField(f, x, i)).join('')}
+          <div class="tpl-qa-foot"><span class="muted">第 ${i + 1} 組</span><button class="pill sm ghost" type="button" data-act="tpl-qa-del">刪除這一組</button></div></div>`).join('')}</div>
         ${qa.length < TPL_QA_MAX ? '<div><button class="pill sm ghost" type="button" data-act="tpl-qa-add">＋ 加一組</button></div>' : ''}</div>
       <label class="field wide"><span>這檔商品不能說的話</span>
         <textarea data-t="donts" rows="4" maxlength="900" placeholder="一行一條。例：不能把來自收益平準金的配息說成獲利。">${esc(t.donts)}</textarea></label>
@@ -1176,7 +1197,7 @@ const Arena = (() => {
     if (!d?.draft) {
       t.note = `AI 這次沒寫出來（${err || '內容不完整'}），可以再按一次，或自己填。`;
     } else {
-      Object.assign(t, { points: d.draft.points.join('\n'), qa: d.draft.qa.map((x) => ({ q: x.q, a: x.a })), donts: d.draft.donts.join('\n'),
+      Object.assign(t, { points: d.draft.points.join('\n'), qa: d.draft.qa.map(qaRow), donts: d.draft.donts.join('\n'),
         note: 'AI 寫好草稿了，請核對後修改。' });
       W.dirty = true;
     }
@@ -1221,7 +1242,7 @@ const Arena = (() => {
       if (my !== W.gen) return;
       raw.type = TYPES[t.type] ? t.type : 'custom';
       FK.forEach((k) => { raw.p[k] = String(t.p?.[k] || ''); });
-      Object.assign(tpl, { id: t.id, points: (t.points || []).join('\n'), qa: (t.qa || []).map((x) => ({ q: String(x.q || ''), a: String(x.a || '') })),
+      Object.assign(tpl, { id: t.id, points: (t.points || []).join('\n'), qa: (t.qa || []).map(qaRow),
         donts: (t.donts || []).join('\n'), review: t.review || tpl.review, source: t.source || '' });
     }
     Object.assign(W, { step: 1, raw, phrases: [...PHRASES], editId: '', saved: null, base: null, dirty: false, busy: false, ol: null, note: null, cands: null, tpl });
@@ -1410,7 +1431,7 @@ const Arena = (() => {
     if (act === 'tpl-approve') { tplSave(true); return; }
     if (act === 'tpl-qa-add') {
       readForm();
-      if (W.tpl.qa.length < TPL_QA_MAX) W.tpl.qa.push({ q: '', a: '' });
+      if (W.tpl.qa.length < TPL_QA_MAX) W.tpl.qa.push(qaRow());
       render();
       $id('wizardBody').querySelector('.tpl-qa-row:last-child [data-qa="q"]')?.focus();
       return;

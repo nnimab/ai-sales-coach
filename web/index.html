@@ -517,12 +517,16 @@
 </div>
 
 <!-- 來電 / 撥號 -->
-<div id="callOverlay" class="overlay ring-overlay dark-scope hidden" role="dialog" aria-modal="true" aria-labelledby="phoneName">
+<div id="callOverlay" class="overlay ring-overlay dark-scope hidden" role="dialog" aria-modal="true" aria-labelledby="phoneName" aria-describedby="phoneBrief">
   <div class="modal call-modal">
     <div class="call-avatar"><span class="ring"></span><span class="ring r2"></span><div class="avatar" id="phoneAvatarBox"></div></div>
     <h2 id="phoneName"></h2>
     <div class="call-status" id="phoneStatus"></div>
     <div class="call-scn" id="phoneScn"></div>
+    <dl class="call-brief" id="phoneBrief">
+      <div><dt>商品</dt><dd id="phoneProduct"></dd></div>
+      <div><dt>本次任務</dt><dd id="phoneTask"></dd></div>
+    </dl>
     <div class="call-plan" id="phoneMode"></div>
     <div class="call-buttons">
       <div class="cb"><button class="round decline" id="btnDecline" type="button" aria-label="取消"><span data-icon="x"></span></button><span>取消</span></div>
